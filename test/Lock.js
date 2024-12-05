@@ -2,125 +2,126 @@ const {
   time,
   loadFixture,
 } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
-const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 const { expect } = require("chai");
 
-describe("Lock", function () {
-  // We define a fixture to reuse the same setup in every test.
-  // We use loadFixture to run this setup once, snapshot that state,
-  // and reset Hardhat Network to that snapshot in every test.
-  async function deployOneYearLockFixture() {
-    const ONE_YEAR_IN_SECS = 365 * 24 * 60 * 60;
-    const ONE_GWEI = 1_000_000_000;
+describe("HawalaFactory", function () {
+  let HawalaFactory, factory, usdt;
+  let owner, seller, buyer;
 
-    const lockedAmount = ONE_GWEI;
-    const unlockTime = (await time.latest()) + ONE_YEAR_IN_SECS;
+  beforeEach(async function () {
+      const USDTToken = await ethers.getContractFactory("MockUSDT");
+      usdt = await USDTToken.deploy();
 
-    // Contracts are deployed using the first signer/account by default
-    const [owner, otherAccount] = await ethers.getSigners();
 
-    const Lock = await ethers.getContractFactory("Lock");
-    const lock = await Lock.deploy(unlockTime, { value: lockedAmount });
+      [owner, seller, buyer] = await ethers.getSigners();
+      
+      HawalaFactory = await ethers.getContractFactory("HawalaFactory");
+      factory = await HawalaFactory.deploy(usdt.target, owner.address);
+      
 
-    return { lock, unlockTime, lockedAmount, owner, otherAccount };
-  }
-
-  describe("Deployment", function () {
-    it("Should set the right unlockTime", async function () {
-      const { lock, unlockTime } = await loadFixture(deployOneYearLockFixture);
-
-      expect(await lock.unlockTime()).to.equal(unlockTime);
-    });
-
-    it("Should set the right owner", async function () {
-      const { lock, owner } = await loadFixture(deployOneYearLockFixture);
-
-      expect(await lock.owner()).to.equal(owner.address);
-    });
-
-    it("Should receive and store the funds to lock", async function () {
-      const { lock, lockedAmount } = await loadFixture(
-        deployOneYearLockFixture
+      await factory.setMinimumTradeSizes(
+          ethers.parseUnits("100", 6),  // 100 USDT min for market
+          ethers.parseUnits("1000", 6)  // 1000 USDT min for orderbook
       );
-
-      expect(await ethers.provider.getBalance(lock.target)).to.equal(
-        lockedAmount
-      );
-    });
-
-    it("Should fail if the unlockTime is not in the future", async function () {
-      // We don't use the fixture here because we want a different deployment
-      const latestTime = await time.latest();
-      const Lock = await ethers.getContractFactory("Lock");
-      await expect(Lock.deploy(latestTime, { value: 1 })).to.be.revertedWith(
-        "Unlock time should be in the future"
-      );
-    });
+      await factory.setLargeOrderThreshold(ethers.parseUnits("10000", 6)); // 10k USDT
   });
 
-  describe("Withdrawals", function () {
-    describe("Validations", function () {
-      it("Should revert with the right error if called too soon", async function () {
-        const { lock } = await loadFixture(deployOneYearLockFixture);
-
-        await expect(lock.withdraw()).to.be.revertedWith(
-          "You can't withdraw yet"
-        );
+  describe("Initialization", function () {
+      it("Should set the correct USDT token address", async function () {
+          expect(await factory.usdtToken()).to.equal(usdt.target);
       });
 
-      it("Should revert with the right error if called from another account", async function () {
-        const { lock, unlockTime, otherAccount } = await loadFixture(
-          deployOneYearLockFixture
-        );
+      it("Should not be paused initially", async function () {
+          expect(await factory.tradingPaused()).to.equal(false);
+      });
+  });
 
-        // We can increase the time in Hardhat Network
-        await time.increaseTo(unlockTime);
-
-        // We use lock.connect() to send a transaction from another account
-        await expect(lock.connect(otherAccount).withdraw()).to.be.revertedWith(
-          "You aren't the owner"
-        );
+  describe("Market Trade Creation", function () {
+      it("Should create a market buy trade", async function () {
+          const amount = ethers.parseUnits("500", 6); // 500 USDT
+          const tx = await factory.createMarketTrade(amount,amount, true, true);
+          const receipt = await tx.wait();
+          console.log("receipt", receipt);
+          
+          const event = receipt.events.find(e => e.event === 'TradeCreated');
+          expect(event).to.not.be.undefined;
+          
+          const tradeId = event.args.tradeId;
+          const trade = await factory.trades(tradeId);
+          
+          expect(trade.creator).to.equal(owner.address);
+          expect(trade.amount).to.equal(amount);
+          expect(trade.isBuyOrder).to.be.true;
+          expect(trade.isMarketPrice).to.be.true;
       });
 
-      it("Shouldn't fail if the unlockTime has arrived and the owner calls it", async function () {
-        const { lock, unlockTime } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        // Transactions are sent using the first signer by default
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw()).not.to.be.reverted;
+      it("Should reject trades below minimum size", async function () {
+          const amount = ethers.parseUnits("50", 6); // 50 USDT
+          await expect(
+              factory.createMarketTrade(amount,amount, true, true)
+          ).to.be.revertedWith("Below minimum trade size");
       });
-    });
 
-    describe("Events", function () {
-      it("Should emit an event on withdrawals", async function () {
-        const { lock, unlockTime, lockedAmount } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw())
-          .to.emit(lock, "Withdrawal")
-          .withArgs(lockedAmount, anyValue); // We accept any value as `when` arg
+      it("Should reject trades above threshold", async function () {
+          const amount = ethers.parseUnits("20000", 6); // 20k USDT
+          await expect(
+              factory.createMarketTrade(amount,amount, true, true)
+          ).to.be.revertedWith("Amount exceeds large order threshold");
       });
-    });
+  });
 
-    describe("Transfers", function () {
-      it("Should transfer the funds to the owner", async function () {
-        const { lock, unlockTime, lockedAmount, owner } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw()).to.changeEtherBalances(
-          [owner, lock],
-          [lockedAmount, -lockedAmount]
-        );
+  describe("Order Book Trade Creation", function () {
+      it("Should create an order book sell trade", async function () {
+          const amount = ethers.parseUnits("1500", 6); // 1500 USDT
+          const price = ethers.parseUnits("50000", 6); // 50k USDT per BTC
+          const tx = await factory.createOrderBookTrade(amount, price, false, true);
+          const receipt = await tx.wait();
+          
+          const event = receipt.events.find(e => e.event === 'TradeCreated');
+          const tradeId = event.args.tradeId;
+          const trade = await factory.trades(tradeId);
+          
+          expect(trade.creator).to.equal(owner.address);
+          expect(trade.amount).to.equal(amount);
+          expect(trade.price).to.equal(price);
+          expect(trade.isBuyOrder).to.be.false;
+          expect(trade.isMarketPrice).to.be.false;
       });
-    });
+  });
+
+  describe("Trade Execution", function () {
+      it("Should execute a market trade", async function () {
+          // Setup
+          const amount = ethers.parseUnits("500", 6);
+          await usdt.transfer(buyer.address, Number(amount) * 2);
+          await usdt.connect(buyer).approve(factory.target, Number(amount) * 2);
+          
+          // Create trade
+          const tx = await factory.createMarketTrade(amount, true, true);
+          const receipt = await tx.wait();
+          const tradeId = receipt.events.find(e => e.event === 'TradeCreated').args.tradeId;
+          
+          // Execute trade
+          const price = ethers.parseUnits("50000", 6);
+          await expect(factory.connect(buyer).executeTrade(tradeId, price))
+              .to.emit(factory, 'TradeExecuted');
+      });
+  });
+
+  describe("Circuit Breaker", function () {
+      it("Should pause and resume trading", async function () {
+          await factory.pauseTrading();
+          expect(await factory.tradingPaused()).to.be.true;
+
+          const amount = ethers.parseUnits("500", 6);
+          await expect(
+              factory.createMarketTrade(amount,amount, true, true)
+          ).to.be.revertedWith("Trading is paused");
+
+          // Wait for cooldown
+          await ethers.provider.send("evm_increaseTime", [24 * 60 * 60]);
+          await factory.resumeTrading();
+          expect(await factory.tradingPaused()).to.be.false;
+      });
   });
 });

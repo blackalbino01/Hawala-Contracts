@@ -66,7 +66,10 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         _;
     }
 
-    constructor(address _usdtToken, address initialOwner) Ownable(initialOwner) {
+    constructor(
+        address _usdtToken,
+        address initialOwner
+    ) Ownable(initialOwner) {
         usdtToken = IERC20(_usdtToken);
     }
 
