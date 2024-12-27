@@ -4,9 +4,11 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./HawalaToken.sol";
 
 contract HawalaVesting is Ownable, ReentrancyGuard {
-    IERC20 public immutable token;
+    HawalaToken public immutable token;
+    address public presaleContract;
 
     struct VestingSchedule {
         uint256 totalAmount;
@@ -43,16 +45,25 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
         uint256 amount
     );
     event TokensClaimed(address indexed beneficiary, uint256 amount);
+    event PresaleContractUpdated(address indexed newPresaleContract);
 
-    constructor(address _token, address initialOwner) Ownable(initialOwner) {
-        token = IERC20(_token);
+    modifier onlyAuthorized() {
+        require(
+            msg.sender == owner() || msg.sender == presaleContract,
+            "Not authorized"
+        );
+        _;
+    }
+
+    constructor(address _token) Ownable(msg.sender) {
+        token = HawalaToken(_token);
     }
 
     function createVestingSchedule(
         address beneficiary,
         uint256 amount,
         VestingType vestingType
-    ) external onlyOwner {
+    ) external onlyAuthorized {
         require(beneficiary != address(0), "Invalid address");
         require(amount > 0, "Amount must be > 0");
 
@@ -69,7 +80,30 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
             vestingType: vestingType
         });
 
+        if (
+            vestingType == VestingType.PRIVATE_SALE ||
+            vestingType == VestingType.PUBLIC_SALE_1 ||
+            vestingType == VestingType.PUBLIC_SALE_2 ||
+            vestingType == VestingType.PUBLIC_SALE_3
+        ) {
+            token.transfer(beneficiary, amount);
+
+            token.setVestingSchedule(
+                beneficiary,
+                amount,
+                uint8(vestingType),
+                vestingDuration,
+                cliffDuration
+            );
+        }
+
         emit ScheduleCreated(beneficiary, vestingType, amount);
+    }
+
+    function setPresaleContract(address _presaleContract) external onlyOwner {
+        require(_presaleContract != address(0), "Invalid address");
+        presaleContract = _presaleContract;
+        emit PresaleContractUpdated(_presaleContract);
     }
 
     function getCliffDuration(
@@ -87,22 +121,24 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
     function getVestingDuration(
         VestingType vestingType
     ) private pure returns (uint256) {
+        if (vestingType == VestingType.PRIVATE_SALE) return 540 days; // 18 months
+        if (vestingType == VestingType.PUBLIC_SALE_1) return 360 days; // 12 months
+        if (vestingType == VestingType.PUBLIC_SALE_2) return 300 days; // 10 months
+        if (vestingType == VestingType.PUBLIC_SALE_3) return 240 days; // 8 months
+        if (vestingType == VestingType.AIRDROP) return 360 days; // 12 months
+        if (vestingType == VestingType.DEV) return 360 days; // 12 months
+        if (vestingType == VestingType.TRADING_AIRDROP) return 0; // 9 months lock, no vesting
         if (
             vestingType == VestingType.DEX ||
             vestingType == VestingType.CEX ||
             vestingType == VestingType.MARKETING
-        ) return 0;
-        if (vestingType == VestingType.TRADING_AIRDROP) return 0;
-        if (vestingType == VestingType.AIRDROP) return 300 days; // 10 months
+        ) return 0; // Unlocked
 
-        if (vestingType == VestingType.DEV) return 240 days; // 8 months
-
-        return 360 days; // 12 months for all sales rounds
+        revert("Invalid vesting type");
     }
 
     function claim() external nonReentrant {
         VestingSchedule storage schedule = vestingSchedules[msg.sender];
-        require(schedule.isActive, "No active schedule");
         require(block.timestamp >= schedule.cliffEnd, "Cliff period active");
 
         uint256 claimable = calculateClaimable(schedule);
@@ -110,10 +146,6 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
 
         schedule.lastClaim = block.timestamp;
         schedule.amountClaimed += claimable;
-
-        if (schedule.amountClaimed >= schedule.totalAmount) {
-            schedule.isActive = false;
-        }
 
         require(token.transfer(msg.sender, claimable), "Transfer failed");
         emit TokensClaimed(msg.sender, claimable);
