@@ -198,9 +198,10 @@ describe("Hawala Token Ecosystem", function () {
       // Non-BTC investment with USDT
       await presale.connect(addr1).invest(
           false,
-          ethers.parseUnits("5000", 6),
+          ethers.parseUnits("0.01", 18),
           ethers.parseEther("1000000"),
-          usdt.target
+          ethers.ZeroAddress,
+          {value: ethers.parseUnits("0.01", 18)}
       );
       
       // BTC investment
@@ -248,7 +249,7 @@ describe("Hawala Token Ecosystem", function () {
     });
   });
 
-  /*describe("Initialization", function () {
+  describe("Initialization", function () {
       it("Should set the correct USDT token address", async function () {
           expect(await factory.usdtToken()).to.equal(usdt.target);
       });
@@ -345,5 +346,5 @@ describe("Hawala Token Ecosystem", function () {
           await factory.resumeTrading();
           expect(await factory.tradingPaused()).to.be.false;
       });
-  });*/
+  });
 });

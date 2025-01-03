@@ -17,6 +17,13 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         uint256 creationTime;
         TradeStatus status;
         bool isBTCtoUSDT;
+        address usdtRecipient;
+    }
+
+    struct Agent {
+        bool isActive;
+        uint256 commissionRate;
+        uint256 totalCommission;
     }
 
     enum TradeStatus {
@@ -26,13 +33,13 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
     }
 
     // Constants
-    uint256 public constant CASHBACK_RATE = 50; // 50% of fee
     uint256 public constant MARKET_TRADE_TIMEOUT = 1 hours;
     uint256 public constant ORDERBOOK_TRADE_TIMEOUT = 24 hours;
 
     // Configurable parameters
     uint256 public marketFee = 25; // 0.25%
     uint256 public orderBookFee = 200; // 2.00%
+    uint256 public cashback_rate = 50; // 50% of fee
     uint256 public minMarketTradeSize;
     uint256 public minOrderBookTradeSize;
     uint256 public largeOrderThreshold;
@@ -43,6 +50,11 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
 
     mapping(bytes32 => Trade) public trades;
     mapping(address => uint256) public tradingVolume;
+    mapping(address => bool) public blockedWallets;
+    mapping(address => address) public clientToAgent;
+    mapping(address => Agent) public agents;
+
+    bytes32[] public allTradeIds;
 
     event TradeCreated(
         bytes32 indexed tradeId,
@@ -60,9 +72,27 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
     event TradeCancelled(bytes32 indexed tradeId);
     event TradingPaused(uint256 timestamp);
     event TradingResumed(uint256 timestamp);
+    event WalletBlocked(address indexed wallet);
+    event WalletUnblocked(address indexed wallet);
+    event AgentRegistered(address indexed agent, uint256 commissionRate);
+    event ClientAssigned(address indexed client, address indexed agent);
+    event TradeSizeUpdated(
+        uint256 minMarketTradeSize,
+        uint256 minOrderBookTradeSize
+    );
+    event FeesUpdated(uint256 minMarketFee, uint256 minOrderBookFee);
+    event CashbackUpdated(uint256 cashback_rate);
+    event LargeOrderThresholdUpdated(uint256 largeOrderThreshold);
+    event FeesWithdrawn(uint256 fees);
+    event EmergencyWithrawal(uint256 withdrawn_amount);
 
     modifier whenNotPaused() {
         require(!tradingPaused, "Trading is paused");
+        _;
+    }
+
+    modifier notBlocked() {
+        require(!blockedWallets[msg.sender], "Wallet is blocked");
         _;
     }
 
@@ -73,55 +103,43 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         usdtToken = IERC20(_usdtToken);
     }
 
-    function createMarketTrade(
+    function swap(
         uint256 amount,
-        uint256 price,
-        bool isBuyOrder,
+        address recipient,
         bool isBTCtoUSDT
-    ) external nonReentrant whenNotPaused returns (bytes32) {
-        require(amount >= minMarketTradeSize, "Below minimum trade size");
-        require(
-            amount < largeOrderThreshold,
-            "Amount exceeds large order threshold"
+    ) external nonReentrant whenNotPaused notBlocked {
+        require(amount > 0, "Invalid amount");
+        require(recipient != address(0), "Invalid recipient");
+
+        bytes32 tradeId = createTrade(
+            amount,
+            0,
+            !isBuyOrder,
+            isBTCtoUSDT,
+            true,
+            recipient
         );
-
-        bytes32 tradeId = keccak256(
-            abi.encodePacked(
-                block.timestamp,
-                msg.sender,
-                amount,
-                price,
-                "market",
-                isBTCtoUSDT
-            )
-        );
-
-        trades[tradeId] = Trade({
-            creator: msg.sender,
-            amount: amount,
-            price: price,
-            isBuyOrder: isBuyOrder,
-            isMarketPrice: true,
-            creationTime: block.timestamp,
-            status: TradeStatus.Open,
-            isBTCtoUSDT: isBTCtoUSDT
-        });
-
-        emit TradeCreated(tradeId, msg.sender, true, isBTCtoUSDT);
-        return tradeId;
     }
 
-    function createOrderBookTrade(
+    function createTrade(
         uint256 amount,
         uint256 price,
         bool isBuyOrder,
-        bool isBTCtoUSDT
+        bool isBTCtoUSDT,
+        bool isMarketPrice,
+        address usdtRecipient
     ) external nonReentrant whenNotPaused returns (bytes32) {
-        require(amount >= minOrderBookTradeSize, "Below minimum trade size");
+        require(amount > 0, "Invalid amount");
+        require(
+            amount >=
+                (isMarketPrice ? minMarketTradeSize : minOrderBookTradeSize),
+            "Below minimum trade size"
+        );
         require(
             amount < largeOrderThreshold,
             "Amount exceeds large order threshold"
         );
+        if (!isMarketPrice) require(price > 0, "Invalid price");
 
         bytes32 tradeId = keccak256(
             abi.encodePacked(
@@ -129,7 +147,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
                 msg.sender,
                 amount,
                 price,
-                "orderbook",
+                isMarketPrice ? "market" : "orderbook",
                 isBTCtoUSDT
             )
         );
@@ -139,20 +157,21 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
             amount: amount,
             price: price,
             isBuyOrder: isBuyOrder,
-            isMarketPrice: false,
+            isMarketPrice: isMarketPrice,
             creationTime: block.timestamp,
             status: TradeStatus.Open,
-            isBTCtoUSDT: isBTCtoUSDT
+            isBTCtoUSDT: isBTCtoUSDT,
+            usdtRecipient: usdtRecipient
         });
 
-        emit TradeCreated(tradeId, msg.sender, false, isBTCtoUSDT);
+        emit TradeCreated(tradeId, msg.sender, isMarketPrice, isBTCtoUSDT);
         return tradeId;
     }
 
     function executeTrade(
         bytes32 tradeId,
         uint256 currentPrice
-    ) external nonReentrant whenNotPaused {
+    ) external nonReentrant whenNotPaused notBlocked {
         Trade storage trade = trades[tradeId];
         require(trade.status == TradeStatus.Open, "Trade not open");
         require(
@@ -171,16 +190,35 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         uint256 fee = trade.isMarketPrice
             ? ((usdtAmount * marketFee) / 10000)
             : ((usdtAmount * orderBookFee) / 10000);
-        uint256 amount = usdtAmount + fee;
+
+        if (clientToAgent[trade.creator] != address(0)) {
+            address agent = clientToAgent[trade.creator];
+            uint256 agentCommission = (fee * agents[agent].commissionRate) /
+                10000;
+            agents[agent].totalCommission += agentCommission;
+            require(
+                usdtToken.transfer(agent, agentCommission),
+                "Agent commission transfer failed"
+            );
+            fee -= agentCommission;
+        }
+
+        address recipient = trade.usdtRecipient != address(0)
+            ? trade.usdtRecipient
+            : trade.creator;
 
         if (trade.isBuyOrder) {
             require(
-                usdtToken.transferFrom(trade.creator, msg.sender, amount),
+                usdtToken.transferFrom(
+                    trade.creator,
+                    msg.sender,
+                    usdtAmount + fee
+                ),
                 "USDT transfer failed"
             );
         } else {
             require(
-                usdtToken.transferFrom(msg.sender, trade.creator, amount),
+                usdtToken.transferFrom(msg.sender, recipient, usdtAmount + fee),
                 "USDT transfer failed"
             );
         }
@@ -195,8 +233,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
 
         tradingVolume[msg.sender] += usdtAmount;
         tradingVolume[trade.creator] += usdtAmount;
-
         trade.status = TradeStatus.Completed;
+
         emit TradeExecuted(
             tradeId,
             msg.sender,
@@ -204,6 +242,82 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
             trade.amount,
             price
         );
+    }
+
+    function getOpenOrders()
+        external
+        view
+        returns (
+            bytes32[] memory orderIds,
+            uint256[] memory prices,
+            uint256[] memory amounts,
+            bool[] memory isBuyOrders,
+            bool[] memory isBTCtoUSDTs,
+            address[] memory creators,
+            address[] memory usdtRecipients
+        )
+    {
+        uint256 count = 0;
+        for (uint256 i = 0; i < allTradeIds.length; i++) {
+            if (
+                trades[allTradeIds[i]].status == TradeStatus.Open &&
+                !trades[allTradeIds[i]].isMarketPrice
+            ) {
+                count++;
+            }
+        }
+
+        orderIds = new bytes32[](count);
+        prices = new uint256[](count);
+        amounts = new uint256[](count);
+        isBuyOrders = new bool[](count);
+        isBTCtoUSDTs = new bool[](count);
+        creators = new address[](count);
+        usdtRecipients = new address[](count);
+
+        uint256 index = 0;
+        for (uint256 i = 0; i < allTradeIds.length; i++) {
+            Trade storage trade = trades[allTradeIds[i]];
+            if (trade.status == TradeStatus.Open && !trade.isMarketPrice) {
+                orderIds[index] = allTradeIds[i];
+                prices[index] = trade.price;
+                amounts[index] = trade.amount;
+                isBuyOrders[index] = trade.isBuyOrder;
+                isBTCtoUSDTs[index] = trade.isBTCtoUSDT;
+                creators[index] = trade.creator;
+                usdtRecipients[index] = trade.usdtRecipient;
+                index++;
+            }
+        }
+    }
+
+    function registerAgent(
+        address agent,
+        uint256 commissionRate
+    ) external onlyOwner {
+        require(commissionRate <= 5000, "Max 50% commission");
+        agents[agent] = Agent({
+            isActive: true,
+            commissionRate: commissionRate,
+            totalCommission: 0
+        });
+        emit AgentRegistered(agent, commissionRate);
+    }
+
+    function setClientAgent(address agent) external notBlocked {
+        require(agents[agent].isActive, "Invalid agent");
+        clientToAgent[msg.sender] = agent;
+        emit ClientAssigned(msg.sender, agent);
+    }
+
+    function blockWallet(address wallet) external onlyOwner {
+        blockedWallets[wallet] = true;
+        emit WalletBlocked(wallet);
+    }
+
+    function unblockWallet(address wallet) external onlyOwner {
+        blockedWallets[wallet] = false;
+        emit WalletUnblocked(wallet);
     }
 
     function cancelTrade(bytes32 tradeId) external {
@@ -229,12 +343,25 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         uint256 _marketMin,
         uint256 _orderBookMin
     ) external onlyOwner {
+        require(_marketMin > 0 && _orderBookMin > 0, "Invalid Sizes");
         minMarketTradeSize = _marketMin;
         minOrderBookTradeSize = _orderBookMin;
+
+        emit TradeSizeUpdated(_marketMin, _orderBookMin);
     }
 
     function setLargeOrderThreshold(uint256 _threshold) external onlyOwner {
+        require(_threshold > 0, "Invalid Threshold");
         largeOrderThreshold = _threshold;
+
+        emit LargeOrderThresholdUpdated(_threshold);
+    }
+
+    function setCashBack(uint256 _cashback) external onlyOwner {
+        require(_cashback > 0, "Invalid cashback");
+        cashback_rate = _cashback;
+
+        emit CashbackUpdated(_cashback);
     }
 
     function setFees(
@@ -244,6 +371,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         require(_marketFee > 0 && _orderBookFee > 0, "Invalid fee values");
         marketFee = _marketFee;
         orderBookFee = _orderBookFee;
+
+        emit FeesUpdated(_marketFee, _orderBookFee);
     }
 
     function pauseTrading() external onlyOwner {
@@ -262,11 +391,15 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
 
     function withdrawFees(uint256 amount) external onlyOwner {
         require(usdtToken.transfer(owner(), amount), "Transfer failed");
+
+        emit FeesWithdrawn(amount);
     }
 
     function emergencyWithdraw() external onlyOwner {
         require(tradingPaused, "Trading must be paused");
         uint256 balance = usdtToken.balanceOf(address(this));
         require(usdtToken.transfer(owner(), balance), "Transfer failed");
+
+        emit EmergencyWithdrawn(balance);
     }
 }
