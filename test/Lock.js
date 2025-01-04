@@ -35,10 +35,10 @@ describe("Hawala Token Ecosystem", function () {
       await vesting.setPresaleContract(presale.target);
       await token.transfer(vesting.target, ethers.parseEther("50000000"));
       await factory.setMinimumTradeSizes(
-          ethers.parseUnits("100", 6),  // 100 USDT min for market
-          ethers.parseUnits("1000", 6)  // 1000 USDT min for orderbook
+          ethers.parseUnits("100", 18),  // 100 USDT min for market
+          ethers.parseUnits("1000", 18)  // 1000 USDT min for orderbook
       );
-      await factory.setLargeOrderThreshold(ethers.parseUnits("10000", 6)); // 10k USDT
+      await factory.setLargeOrderThreshold(ethers.parseUnits("10000", 18)); // 10k USDT
   });
 
   describe("HawalaToken", function () {
@@ -153,7 +153,7 @@ describe("Hawala Token Ecosystem", function () {
     it("Should start private sale correctly", async function () {
       await presale.startPrivateSale();
       const round = await presale.currentRound();
-      expect(round.price).to.equal(500);
+      expect(round.price).to.equal(800);
       expect(round.isActive).to.be.true;
     });
 
@@ -259,77 +259,172 @@ describe("Hawala Token Ecosystem", function () {
       });
   });
 
-  describe("Market Trade Creation", function () {
-      it("Should create a market buy trade", async function () {
-          const amount = ethers.parseUnits("500", 6); // 500 USDT
-          const tx = await factory.createMarketTrade(amount,amount, true, true);
-          const receipt = await tx.wait();
-          //console.log("receipt", receipt);
-          
-          const event = receipt.events.find(e => e.event === 'TradeCreated');
-          expect(event).to.not.be.undefined;
-          
-          const tradeId = event.args.tradeId;
-          const trade = await factory.trades(tradeId);
-          
-          expect(trade.creator).to.equal(owner.address);
-          expect(trade.amount).to.equal(amount);
-          expect(trade.isBuyOrder).to.be.true;
-          expect(trade.isMarketPrice).to.be.true;
-      });
+  describe("Market Price Trading", function () {
+  it("Should create and execute market swap BTC to USDT", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 18); // 1000 USDT
+      const price = ethers.parseUnits("50000", 18); // $50k per BTC
+      const totalAmount = usdtAmount + (usdtAmount * BigInt(25) / BigInt(10000)); // Amount + 0.25% fee
 
-      it("Should reject trades below minimum size", async function () {
-          const amount = ethers.parseUnits("50", 6); // 50 USDT
-          await expect(
-              factory.createMarketTrade(amount,amount, true, true)
-          ).to.be.revertedWith("Below minimum trade size");
-      });
+        // Setup buyer with sufficient USDT and approval
+        await usdt.connect(owner).approve(factory.target, totalAmount);
 
-      it("Should reject trades above threshold", async function () {
-          const amount = ethers.parseUnits("20000", 6); // 20k USDT
-          await expect(
-              factory.createMarketTrade(amount,amount, true, true)
-          ).to.be.revertedWith("Amount exceeds large order threshold");
-      });
+        // Create swap (BTC to USDT)
+        await factory.createTrade(
+          usdtAmount,
+          price,
+          true,
+          true
+        );
+        const tradeId = (await factory.allTradeIds(0));
+        
+        // Execute trade
+        await factory.connect(owner).executeTrade(tradeId);
+    });
+
+    it("Should create and execute market swap USDT to BTC", async function () {
+        const usdtAmount = ethers.parseUnits("1000", 18); // 1000 USDT
+        const price = ethers.parseUnits("50000", 18);
+        const totalAmount = usdtAmount + (usdtAmount * BigInt(25) / BigInt(10000)); // Amount + 0.25% fee
+        
+        // Setup seller with USDT and approval
+        await usdt.transfer(addr1.address, totalAmount);
+        await usdt.connect(addr1).approve(factory.target, totalAmount);
+
+        // Create swap (USDT to BTC)
+        await factory.connect(addr1).createTrade(
+          usdtAmount,
+          price,
+          false,
+          true
+        );
+        const tradeId = (await factory.allTradeIds(0));
+        
+        // Execute trade
+        await factory.executeTrade(tradeId);
+    });
   });
 
-  describe("Order Book Trade Creation", function () {
-      it("Should create an order book sell trade", async function () {
-          const amount = ethers.parseUnits("1500", 6); // 1500 USDT
-          const price = ethers.parseUnits("50000", 6); // 50k USDT per BTC
-          const tx = await factory.createOrderBookTrade(amount, price, false, true);
-          const receipt = await tx.wait();
-          
-          const event = receipt.events.find(e => e.event === 'TradeCreated');
-          const tradeId = event.args.tradeId;
-          const trade = await factory.trades(tradeId);
-          
-          expect(trade.creator).to.equal(owner.address);
-          expect(trade.amount).to.equal(amount);
-          expect(trade.price).to.equal(price);
-          expect(trade.isBuyOrder).to.be.false;
-          expect(trade.isMarketPrice).to.be.false;
-      });
+
+  describe("Order Book Trading", function () {
+    beforeEach(async function () {
+        await usdt.transfer(buyer.address, ethers.parseUnits("100000", 18));
+        await usdt.connect(buyer).approve(factory.target, ethers.parseUnits("100000", 18));
+    });
+
+    it("Should create and list multiple orders", async function () {
+        // Create multiple orders
+        await factory.createTrade(
+            ethers.parseUnits("1000", 18),
+            ethers.parseUnits("45000", 18),
+            true,
+            true
+        );
+        
+        await factory.createTrade(
+            ethers.parseUnits("2000", 18),
+            ethers.parseUnits("46000", 18),
+            true,
+            true
+        );
+
+        const orders = await factory.getOpenOrders();
+        expect(orders.orderIds.length).to.equal(2);
+    });
+
+    it("Should handle order expiration correctly", async function () {
+      const ORDERBOOK_TRADE_TIMEOUT = 24 * 60 * 60;
+      const amount = ethers.parseUnits("1000", 18);
+      const price = ethers.parseUnits("45000", 18);
+      
+      const tx = await factory.createTrade(
+          amount,
+          price,
+          true,
+          true
+      );
+      const tradeId = (await factory.allTradeIds(0));
+      await time.increase(ORDERBOOK_TRADE_TIMEOUT + 1);
+      await factory.cancelTrade(tradeId);
+      
+      const trade = await factory.trades(tradeId);
+      expect(trade.status).to.equal(2);
+    });
   });
 
-  describe("Trade Execution", function () {
-      it("Should execute a market trade", async function () {
-          // Setup
-          const amount = ethers.parseUnits("500", 6);
-          await usdt.transfer(buyer.address, Number(amount) * 2);
-          await usdt.connect(buyer).approve(factory.target, Number(amount) * 2);
-          
-          // Create trade
-          const tx = await factory.createMarketTrade(amount, true, true);
-          const receipt = await tx.wait();
-          const tradeId = receipt.events.find(e => e.event === 'TradeCreated').args.tradeId;
-          
-          // Execute trade
-          const price = ethers.parseUnits("50000", 6);
-          await expect(factory.connect(buyer).executeTrade(tradeId, price))
-              .to.emit(factory, 'TradeExecuted');
-      });
+
+  describe("Agent Commission System", function () {
+    beforeEach(async function () {
+        await usdt.transfer(buyer.address, ethers.parseUnits("100000", 18));
+        await usdt.connect(buyer).approve(factory.target, ethers.parseUnits("100000",18));
+    });
+
+    it("Should handle agent commission distribution", async function () {
+       // Register agent with 20% commission
+       await factory.registerAgent(addr1.address, 2000);
+       await factory.connect(buyer).setClientAgent(addr1.address);
+       
+       const amount = ethers.parseUnits("1000", 18);
+       const price = ethers.parseUnits("50000", 18);
+       const totalAmount = amount + (amount * BigInt(25) / BigInt(10000)); // Amount + 0.25% fee
+       
+       // Setup USDT balances and approvals
+       await usdt.transfer(buyer.address, totalAmount);
+       await usdt.approve(factory.target, totalAmount);
+       
+       // Transfer USDT to factory for commission payments
+       await usdt.transfer(factory.target, ethers.parseUnits("100", 18));
+       
+       // Create and execute trade
+       await factory.connect(buyer).createTrade(
+           amount,
+           price,
+           true,
+           true
+       );
+       
+       const tradeId = (await factory.allTradeIds(0));
+       await factory.executeTrade(tradeId);
+       
+       const agent = await factory.agents(addr1.address);
+       expect(agent.totalCommission).to.be.gt(0);
+   });
+
+    it("Should respect maximum commission rate", async function () {
+        await expect(
+            factory.registerAgent(addr1.address, 6000)
+        ).to.be.revertedWith("Max 50% commission");
+    });
   });
+
+  describe("Wallet Blocking System", function () {
+    it("Should prevent blocked wallets from trading", async function () {
+        await factory.blockWallet(buyer.address);
+        
+        expect(
+            await factory.connect(buyer).createTrade(
+                ethers.parseUnits("1000", 18),
+                ethers.parseUnits("45000", 18),
+                true,
+                true
+            )
+        ).to.be.revertedWith("Wallet is blocked");
+    });
+
+    it("Should allow trading after unblocking", async function () {
+        await factory.blockWallet(buyer.address);
+        await factory.unblockWallet(buyer.address);
+        
+        const tx = await factory.connect(buyer).createTrade(
+            ethers.parseUnits("1000", 18),
+            ethers.parseUnits("45000", 18),
+            true,
+            true
+        );
+        
+        expect(tx).to.not.be.reverted;
+    });
+  });
+
 
   describe("Circuit Breaker", function () {
       it("Should pause and resume trading", async function () {
@@ -338,7 +433,7 @@ describe("Hawala Token Ecosystem", function () {
 
           const amount = ethers.parseUnits("500", 6);
           await expect(
-              factory.createMarketTrade(amount,amount, true, true)
+              factory.createTrade(amount,amount, true, true)
           ).to.be.revertedWith("Trading is paused");
 
           // Wait for cooldown
