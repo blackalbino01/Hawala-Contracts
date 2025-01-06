@@ -10,6 +10,7 @@ describe("Hawala Token Ecosystem", function () {
   const TOTAL_SUPPLY = ethers.parseEther("1000000000");
   const CLIFF = 90 * 24 * 60 * 60; // 90 days in seconds
   const MONTH = 30 * 24 * 60 * 60;
+  const btcAddress = 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh'
 
 
   beforeEach(async function () {
@@ -273,7 +274,8 @@ describe("Hawala Token Ecosystem", function () {
           usdtAmount,
           price,
           true,
-          true
+          true,
+          btcAddress
         );
         const tradeId = (await factory.allTradeIds(0));
         
@@ -295,7 +297,8 @@ describe("Hawala Token Ecosystem", function () {
           usdtAmount,
           price,
           false,
-          true
+          true,
+          btcAddress
         );
         const tradeId = (await factory.allTradeIds(0));
         
@@ -317,14 +320,16 @@ describe("Hawala Token Ecosystem", function () {
             ethers.parseUnits("1000", 18),
             ethers.parseUnits("45000", 18),
             true,
-            true
+            true,
+            btcAddress
         );
         
         await factory.createTrade(
             ethers.parseUnits("2000", 18),
             ethers.parseUnits("46000", 18),
             true,
-            true
+            true,
+            btcAddress
         );
 
         const orders = await factory.getOpenOrders();
@@ -340,7 +345,8 @@ describe("Hawala Token Ecosystem", function () {
           amount,
           price,
           true,
-          true
+          true,
+          btcAddress
       );
       const tradeId = (await factory.allTradeIds(0));
       await time.increase(ORDERBOOK_TRADE_TIMEOUT + 1);
@@ -379,7 +385,8 @@ describe("Hawala Token Ecosystem", function () {
            amount,
            price,
            true,
-           true
+           true,
+           btcAddress
        );
        
        const tradeId = (await factory.allTradeIds(0));
@@ -405,7 +412,8 @@ describe("Hawala Token Ecosystem", function () {
                 ethers.parseUnits("1000", 18),
                 ethers.parseUnits("45000", 18),
                 true,
-                true
+                true,
+                btcAddress
             )
         ).to.be.revertedWith("Wallet is blocked");
     });
@@ -418,7 +426,8 @@ describe("Hawala Token Ecosystem", function () {
             ethers.parseUnits("1000", 18),
             ethers.parseUnits("45000", 18),
             true,
-            true
+            true,
+            btcAddress
         );
         
         expect(tx).to.not.be.reverted;
@@ -433,7 +442,7 @@ describe("Hawala Token Ecosystem", function () {
 
           const amount = ethers.parseUnits("500", 6);
           await expect(
-              factory.createTrade(amount,amount, true, true)
+              factory.createTrade(amount,amount, true, true, btcAddress)
           ).to.be.revertedWith("Trading is paused");
 
           // Wait for cooldown

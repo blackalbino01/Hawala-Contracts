@@ -16,6 +16,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         bool isMarketPrice;
         uint256 creationTime;
         TradeStatus status;
+        string btcAddress;
     }
 
     struct Agent {
@@ -104,7 +105,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         uint256 amount,
         uint256 price,
         bool isBTCtoUSDT,
-        bool isMarketPrice
+        bool isMarketPrice,
+        string memory btcAddress
     ) public nonReentrant whenNotPaused returns (bytes32) {
         require(amount > 0, "Invalid amount");
         require(
@@ -135,7 +137,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
             isBTCtoUSDT: isBTCtoUSDT,
             isMarketPrice: isMarketPrice,
             creationTime: block.timestamp,
-            status: TradeStatus.Open
+            status: TradeStatus.Open,
+            btcAddress: btcAddress
         });
         allTradeIds.push(tradeId);
 
@@ -226,7 +229,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
             uint256[] memory prices,
             uint256[] memory amounts,
             bool[] memory isBTCtoUSDTs,
-            address[] memory creators
+            address[] memory creators,
+            string[] memory btcAddresses
         )
     {
         uint256 count = 0;
@@ -241,6 +245,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
         amounts = new uint256[](count);
         isBTCtoUSDTs = new bool[](count);
         creators = new address[](count);
+        btcAddresses = new string[](count);
 
         uint256 index = 0;
         for (uint256 i = 0; i < allTradeIds.length; i++) {
@@ -251,6 +256,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard {
                 amounts[index] = trade.amount;
                 isBTCtoUSDTs[index] = trade.isBTCtoUSDT;
                 creators[index] = trade.creator;
+                btcAddresses[index] = trade.btcAddress;
+
                 index++;
             }
         }
