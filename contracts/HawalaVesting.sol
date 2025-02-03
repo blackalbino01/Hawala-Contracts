@@ -21,16 +21,14 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
     }
 
     enum VestingType {
-        PRIVATE_SALE,
-        PUBLIC_SALE_1,
-        PUBLIC_SALE_2,
-        PUBLIC_SALE_3,
+        PUBLIC_SALE,
         DEX,
         CEX,
         TRADING_AIRDROP,
         MARKETING,
         AIRDROP,
-        DEV
+        DEV,
+        TEAM
     }
 
     mapping(address => VestingSchedule) public vestingSchedules;
@@ -80,12 +78,7 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
             vestingType: vestingType
         });
 
-        if (
-            vestingType == VestingType.PRIVATE_SALE ||
-            vestingType == VestingType.PUBLIC_SALE_1 ||
-            vestingType == VestingType.PUBLIC_SALE_2 ||
-            vestingType == VestingType.PUBLIC_SALE_3
-        ) {
+        if (vestingType == VestingType.PUBLIC_SALE) {
             token.transfer(beneficiary, amount);
 
             token.setVestingSchedule(
@@ -121,17 +114,15 @@ contract HawalaVesting is Ownable, ReentrancyGuard {
     function getVestingDuration(
         VestingType vestingType
     ) private pure returns (uint256) {
-        if (vestingType == VestingType.PRIVATE_SALE) return 540 days; // 18 months
-        if (vestingType == VestingType.PUBLIC_SALE_1) return 360 days; // 12 months
-        if (vestingType == VestingType.PUBLIC_SALE_2) return 300 days; // 10 months
-        if (vestingType == VestingType.PUBLIC_SALE_3) return 240 days; // 8 months
+        if (vestingType == VestingType.PUBLIC_SALE) return 270 days; // 9 months
         if (vestingType == VestingType.AIRDROP) return 360 days; // 12 months
         if (vestingType == VestingType.DEV) return 360 days; // 12 months
-        if (vestingType == VestingType.TRADING_AIRDROP) return 0; // 9 months lock, no vesting
+        if (vestingType == VestingType.TEAM) return 0; // 12 months
         if (
             vestingType == VestingType.DEX ||
             vestingType == VestingType.CEX ||
-            vestingType == VestingType.MARKETING
+            vestingType == VestingType.MARKETING ||
+            vestingType == VestingType.TRADING_AIRDROP
         ) return 0; // Unlocked
 
         revert("Invalid vesting type");

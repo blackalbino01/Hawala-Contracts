@@ -4,117 +4,58 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
 interface IVesting {
     function createVestingSchedule(address, uint256, uint8) external;
 }
 
-contract HawalaPresale is Ownable, ReentrancyGuard {
+contract HawalaPresale is Ownable, ReentrancyGuard, Pausable {
     IERC20 public immutable hawalaToken;
     IVesting public immutable vesting;
 
-    struct Round {
-        uint256 price;
-        uint256 allocation;
-        uint256 sold;
+    struct PriceTier {
+        uint96 minInvestment;
+        uint96 price;
         bool isActive;
     }
 
-    Round public currentRound;
-    uint8 public roundNumber;
-    bool public paused;
+    PriceTier[4] private priceTiers;
 
-    event RoundStarted(uint8 indexed round, uint256 price);
+    uint256 public constant TOTAL_TOKENS_FOR_SALE = 50_000_000e18; // 5% of total supply
+
+    uint256 public totalTokenSold;
+
     event Investment(
         address indexed investor,
         bool isBTCPayment,
         uint256 tokenAmount
     );
 
-    modifier whenNotPaused() {
-        require(!paused, "Sale is paused");
-        _;
-    }
-
     constructor(address _token, address _vesting) Ownable(msg.sender) {
         hawalaToken = IERC20(_token);
         vesting = IVesting(_vesting);
+
+        priceTiers[0] = PriceTier(50000e18, 800, true); // $50,000+ = $0.008
+        priceTiers[1] = PriceTier(25000e18, 1000, true); // $25,000+ = $0.010
+        priceTiers[2] = PriceTier(10000e18, 1200, true); // $10,000+ = $0.012
+        priceTiers[3] = PriceTier(250e18, 1500, true); // $250+ = $0.015
     }
 
     receive() external payable {}
 
-    function startPrivateSale() external onlyOwner {
-        require(roundNumber == 0, "Sale already started");
-        currentRound = Round({
-            price: 800, // $0.008 * 100000
-            allocation: 50_000_000 * 10 ** 18,
-            sold: 0,
-            isActive: true
-        });
-        roundNumber = 1;
-        emit RoundStarted(roundNumber, currentRound.price);
-    }
-
-    function getCurrentRoundInfo()
-        external
-        view
-        returns (
-            uint256 price,
-            uint256 allocation,
-            uint256 sold,
-            bool isActive,
-            uint8 round
-        )
-    {
-        return (
-            currentRound.price,
-            currentRound.allocation,
-            currentRound.sold,
-            currentRound.isActive,
-            roundNumber
-        );
-    }
-
-    function getRoundPrices()
-        external
-        pure
-        returns (
-            uint256 privateSalePrice, // $0.008
-            uint256 publicSale1Price, // $0.010
-            uint256 publicSale2Price, // $0.012
-            uint256 publicSale3Price // $0.015
-        )
-    {
-        return (500, 1000, 1200, 1500); // Prices multiplied by 100000
-    }
-
-    function getTotalRaised() external view returns (uint256, uint256) {
-        uint256 raisedAmount = 0;
-        uint256 targetAmount = 2250000;
-
-        // Calculate total raised across all rounds
-        if (roundNumber >= 1) {
-            // Add current round's raised amount
-            raisedAmount += (currentRound.sold * currentRound.price) / 100000;
-
-            // Add amounts from completed rounds
-            if (roundNumber > 1) {
-                raisedAmount += (50_000_000 * 10 ** 18 * 800) / 100000; // Private Sale ($400,000)
-                if (roundNumber > 2) {
-                    raisedAmount += (50_000_000 * 10 ** 18 * 1000) / 100000; // Public Sale 1 ($500,000)
-                    if (roundNumber > 3) {
-                        raisedAmount += (50_000_000 * 10 ** 18 * 1200) / 100000; // Public Sale 2 ($600,000)
-                        if (roundNumber > 4) {
-                            raisedAmount +=
-                                (50_000_000 * 10 ** 18 * 1500) /
-                                100000; // Public Sale 3 ($750,000)
-                        }
-                    }
-                }
+    function getTokenPrice(
+        uint256 investmentAmount
+    ) public view returns (uint256) {
+        for (uint256 i = 0; i < priceTiers.length; i++) {
+            if (
+                priceTiers[i].isActive &&
+                investmentAmount >= priceTiers[i].minInvestment
+            ) {
+                return priceTiers[i].price;
             }
         }
-
-        return (raisedAmount, targetAmount);
+        revert("Below minimum investment");
     }
 
     function invest(
@@ -123,10 +64,14 @@ contract HawalaPresale is Ownable, ReentrancyGuard {
         uint256 tokenAmount,
         address tokenAddress
     ) external payable nonReentrant whenNotPaused {
-        require(currentRound.isActive, "Round not active");
         require(
-            currentRound.sold + tokenAmount <= currentRound.allocation,
+            totalTokenSold + tokenAmount <= TOTAL_TOKENS_FOR_SALE,
             "Exceeds round allocation"
+        );
+        uint256 price = getTokenPrice(paymentAmount);
+        require(
+            tokenAmount == (paymentAmount * 100000) / price,
+            "Invalid token amount"
         );
 
         if (!isBTCPayment) {
@@ -140,36 +85,11 @@ contract HawalaPresale is Ownable, ReentrancyGuard {
                 );
             }
         }
-        currentRound.sold += tokenAmount;
+        totalTokenSold += tokenAmount;
 
-        vesting.createVestingSchedule(msg.sender, tokenAmount, roundNumber);
-
-        if (currentRound.sold >= currentRound.allocation) {
-            progressToNextRound();
-        }
+        vesting.createVestingSchedule(msg.sender, tokenAmount, 1);
 
         emit Investment(msg.sender, isBTCPayment, tokenAmount);
-    }
-    function progressToNextRound() private {
-        if (roundNumber < 4) {
-            roundNumber++;
-            uint256 newPrice = roundNumber == 2
-                ? 1000 // $0.010
-                : roundNumber == 3
-                    ? 1200 // $0.012
-                    : 1500; // $0.015
-
-            currentRound = Round({
-                price: newPrice,
-                allocation: 50_000_000 * 10 ** 18,
-                sold: 0,
-                isActive: true
-            });
-
-            emit RoundStarted(roundNumber, newPrice);
-        } else {
-            currentRound.isActive = false;
-        }
     }
 
     function emergencyWithdraw(address token) external onlyOwner {
@@ -187,7 +107,13 @@ contract HawalaPresale is Ownable, ReentrancyGuard {
             );
         }
     }
-    function togglePause() external onlyOwner {
-        paused = !paused;
+
+    function updatePriceTier(
+        uint8 index,
+        uint96 minInvestment,
+        uint96 price
+    ) external onlyOwner {
+        require(index < priceTiers.length, "Invalid tier index");
+        priceTiers[index] = PriceTier(minInvestment, price, true);
     }
 }
