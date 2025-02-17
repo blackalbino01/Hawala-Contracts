@@ -14,53 +14,28 @@ contract HawalaPresale is Ownable, ReentrancyGuard, Pausable {
     IERC20 public immutable hawalaToken;
     IVesting public immutable vesting;
 
-    struct PriceTier {
-        uint96 minInvestment;
-        uint96 price;
-        bool isActive;
-    }
-
-    PriceTier[4] private priceTiers;
-
     uint256 public constant TOTAL_TOKENS_FOR_SALE = 50_000_000e18; // 5% of total supply
 
     uint256 public totalTokenSold;
+    uint256 public totalUSDRaised;
 
     event Investment(
         address indexed investor,
         bool isBTCPayment,
-        uint256 tokenAmount
+        uint256 tokenAmount,
+        uint256 usdAmount
     );
 
     constructor(address _token, address _vesting) Ownable(msg.sender) {
         hawalaToken = IERC20(_token);
         vesting = IVesting(_vesting);
-
-        priceTiers[0] = PriceTier(50000e18, 800, true); // $50,000+ = $0.008
-        priceTiers[1] = PriceTier(25000e18, 1000, true); // $25,000+ = $0.010
-        priceTiers[2] = PriceTier(10000e18, 1200, true); // $10,000+ = $0.012
-        priceTiers[3] = PriceTier(250e18, 1500, true); // $250+ = $0.015
     }
 
     receive() external payable {}
 
-    function getTokenPrice(
-        uint256 investmentAmount
-    ) public view returns (uint256) {
-        for (uint256 i = 0; i < priceTiers.length; i++) {
-            if (
-                priceTiers[i].isActive &&
-                investmentAmount >= priceTiers[i].minInvestment
-            ) {
-                return priceTiers[i].price;
-            }
-        }
-        revert("Below minimum investment");
-    }
-
     function invest(
         bool isBTCPayment,
-        uint256 paymentAmount,
+        uint256 usdAmount,
         uint256 tokenAmount,
         address tokenAddress
     ) external payable nonReentrant whenNotPaused {
@@ -68,28 +43,24 @@ contract HawalaPresale is Ownable, ReentrancyGuard, Pausable {
             totalTokenSold + tokenAmount <= TOTAL_TOKENS_FOR_SALE,
             "Exceeds round allocation"
         );
-        uint256 price = getTokenPrice(paymentAmount);
-        require(
-            tokenAmount == (paymentAmount * 100000) / price,
-            "Invalid token amount"
-        );
 
         if (!isBTCPayment) {
-            if (msg.value > 0) {
-                require(msg.value == paymentAmount, "Invalid amount");
+            if (tokenAddress == address(0)) {
+                require(msg.value > 0, "Invalid amount");
             } else {
                 IERC20(tokenAddress).transferFrom(
                     msg.sender,
                     address(this),
-                    paymentAmount
+                    usdAmount
                 );
             }
         }
         totalTokenSold += tokenAmount;
+        totalUSDRaised += usdAmount;
 
         vesting.createVestingSchedule(msg.sender, tokenAmount, 1);
 
-        emit Investment(msg.sender, isBTCPayment, tokenAmount);
+        emit Investment(msg.sender, isBTCPayment, tokenAmount, usdAmount);
     }
 
     function emergencyWithdraw(address token) external onlyOwner {
@@ -106,14 +77,5 @@ contract HawalaPresale is Ownable, ReentrancyGuard, Pausable {
                 "Token transfer failed"
             );
         }
-    }
-
-    function updatePriceTier(
-        uint8 index,
-        uint96 minInvestment,
-        uint96 price
-    ) external onlyOwner {
-        require(index < priceTiers.length, "Invalid tier index");
-        priceTiers[index] = PriceTier(minInvestment, price, true);
     }
 }
