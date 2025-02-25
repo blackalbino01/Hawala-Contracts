@@ -12,7 +12,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     struct Trade {
         bytes32 id;
         address creator;
-        uint256 btcAmount; // Amount in satoshis (1e8)
+        uint256 btcAmount; // Amount in wei (1e18)
         uint256 usdtAmount; // Amount in wei (1e18)
         uint256 price; // USDT per BTC in wei
         bool isBTCtoUSDT; // true if market price, false if fixed
@@ -67,7 +67,9 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         bytes32 indexed tradeId,
         address indexed buyer,
         address indexed seller,
-        uint256 amount
+        uint256 executedBtcAmount,
+        uint256 executedUsdtAmount,
+        uint256 remainingBtcAmount
     );
     event TradeCancelled(bytes32 indexed tradeId);
     event TradingPaused(uint256 timestamp);
@@ -85,6 +87,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     event LargeOrderThresholdUpdated(uint256 largeOrderThreshold);
     event FeesWithdrawn(uint256 fees);
     event EmergencyWithdrawal(uint256 withdrawn_amount);
+    event AgentSuspended(address indexed agent);
+    event AgentDeleted(address indexed agent);
 
     modifier notBlocked() {
         require(!blockedWallets[msg.sender], "Wallet is blocked");
@@ -153,10 +157,13 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     }
 
     function executeTrade(
-        bytes32 tradeId
+        bytes32 tradeId,
+        uint256 amount
     ) external nonReentrant whenNotPaused notBlocked {
         Trade storage trade = trades[tradeId];
         require(trade.status == TradeStatus.Open, "Trade not open");
+        require(amount > 0, "Invalid amount");
+        require(amount <= trade.btcAmount, "Execution amount high");
         require(
             block.timestamp <=
                 trade.creationTime +
@@ -167,9 +174,11 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                     ),
             "Trade expired"
         );
+        uint256 usdtAmount = (amount * trade.price) / 1e18;
+        require(usdtAmount <= trade.usdtAmount, "Invalid USDT amount");
 
         (uint256 btcFee, uint256 usdtFee) = calculateFees(
-            trade.btcAmount,
+            amount,
             trade.price,
             trade.isMarketPrice
         );
@@ -177,8 +186,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         trade.btcFee = btcFee;
         trade.usdtFee = usdtFee;
 
-        address agent = clientToAgent[trade.creator];
-        if (agent != address(0)) {
+        address agent = clientToAgent[msg.sender];
+        if (agent != address(0) && agents[agent].isActive) {
             uint256 agentCommission = (usdtFee * agents[agent].commissionRate) /
                 10000;
             agents[agent].totalCommission += agentCommission;
@@ -188,15 +197,11 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             );
         }
 
-        uint256 amountAfterFee = trade.usdtAmount - usdtFee;
+        uint256 amountAfterFee = usdtAmount - usdtFee;
 
         if (trade.isBTCtoUSDT) {
             require(
-                usdtToken.transferFrom(
-                    msg.sender,
-                    address(this),
-                    trade.usdtAmount
-                ),
+                usdtToken.transferFrom(msg.sender, address(this), usdtAmount),
                 "USDT transfer failed"
             );
             require(
@@ -218,15 +223,22 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             );
         }
 
-        tradingVolume[msg.sender] += trade.usdtAmount;
-        tradingVolume[trade.creator] += trade.usdtAmount;
-        trade.status = TradeStatus.Completed;
+        tradingVolume[msg.sender] += usdtAmount;
+        tradingVolume[trade.creator] += usdtAmount;
+        trade.btcAmount -= amount;
+        trade.usdtAmount -= usdtAmount;
+
+        if (trade.btcAmount == 0) {
+            trade.status = TradeStatus.Completed;
+        }
 
         emit TradeExecuted(
             tradeId,
             msg.sender,
             trade.creator,
-            trade.usdtAmount
+            amount,
+            usdtAmount,
+            trade.btcAmount
         );
     }
 
@@ -241,7 +253,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             bool[] memory isBTCtoUSDTs,
             bool[] memory isMarketPrices,
             address[] memory creators,
-            string[] memory btcAddresses
+            string[] memory btcAddresses,
+            TradeStatus[] memory statusses
         )
     {
         uint256 count = 0;
@@ -259,6 +272,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         isMarketPrices = new bool[](count);
         creators = new address[](count);
         btcAddresses = new string[](count);
+        statusses = new TradeStatus[](count);
 
         uint256 index = 0;
         for (uint256 i = 0; i < allTradeIds.length; i++) {
@@ -272,6 +286,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                 isMarketPrices[index] = trade.isMarketPrice;
                 creators[index] = trade.creator;
                 btcAddresses[index] = trade.btcAddress;
+                statusses[index] = trade.status;
 
                 index++;
             }
@@ -300,6 +315,36 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         agentToClients[msg.sender].push(client);
 
         emit ClientAssigned(client, msg.sender);
+    }
+
+    function suspendAgent(address agent) external onlyOwner {
+        require(agents[agent].isActive, "Agent not active");
+        agents[agent].isActive = false;
+        emit AgentSuspended(agent);
+    }
+
+    function deleteAgent(address agent) external onlyOwner {
+        require(
+            agents[agent].isActive || !agents[agent].isActive,
+            "Agent doesn't exist"
+        );
+
+        if (agents[agent].totalCommission > 0) {
+            require(
+                usdtToken.transfer(agent, agents[agent].totalCommission),
+                "Commission transfer failed"
+            );
+        }
+
+        address[] storage clients = agentToClients[agent];
+        for (uint i = 0; i < clients.length; i++) {
+            delete clientToAgent[clients[i]];
+        }
+
+        delete agentToClients[agent];
+        delete agents[agent];
+
+        emit AgentDeleted(agent);
     }
 
     function blockWallet(address wallet) external onlyOwner {
