@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     IERC20 public usdtToken;
+    address private operator;
 
     struct Trade {
         bytes32 id;
@@ -54,6 +55,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     mapping(address => address[]) public agentToClients;
     mapping(address => address) private clientToAgent;
     mapping(address => Agent) public agents;
+    mapping(address => bool) public operators;
 
     bytes32[] public allTradeIds;
 
@@ -89,9 +91,16 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     event EmergencyWithdrawal(uint256 withdrawn_amount);
     event AgentSuspended(address indexed agent);
     event AgentDeleted(address indexed agent);
+    event AgentApproved(address indexed agent);
+    event OperatorUpdated(address indexed operator, bool status);
 
     modifier notBlocked() {
         require(!blockedWallets[msg.sender], "Wallet is blocked");
+        _;
+    }
+
+    modifier onlyOperator() {
+        require(operators[msg.sender], "Not authorized");
         _;
     }
 
@@ -136,7 +145,9 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             price: price,
             isBTCtoUSDT: isBTCtoUSDT,
             isMarketPrice: isMarketPrice,
-            status: TradeStatus.Open,
+            status: blockedWallets[msg.sender]
+                ? TradeStatus.Cancelled
+                : TradeStatus.Open,
             creationTime: block.timestamp,
             btcFee: 0,
             usdtFee: 0,
@@ -293,10 +304,18 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
+    function updateOperator(
+        address _operator,
+        bool _status
+    ) external onlyOwner {
+        operators[_operator] = _status;
+        emit OperatorUpdated(_operator, _status);
+    }
+
     function registerAgent(
         address agent,
         uint256 commissionRate
-    ) external onlyOwner {
+    ) external onlyOperator {
         require(commissionRate <= 7500, "Max 75% commission");
         require(!agents[agent].isActive, "Agent already registered");
 
@@ -308,7 +327,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         emit AgentRegistered(agent, commissionRate);
     }
 
-    function assignClientToAgent(address client) external notBlocked {
+    function assignClientToAgent(address client) external onlyOperator {
         require(agents[msg.sender].isActive, "Invalid agent");
         require(clientToAgent[client] == address(0), "Client already assigned");
         clientToAgent[client] = msg.sender;
@@ -317,13 +336,13 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         emit ClientAssigned(client, msg.sender);
     }
 
-    function suspendAgent(address agent) external onlyOwner {
+    function suspendAgent(address agent) external onlyOperator {
         require(agents[agent].isActive, "Agent not active");
         agents[agent].isActive = false;
         emit AgentSuspended(agent);
     }
 
-    function deleteAgent(address agent) external onlyOwner {
+    function deleteAgent(address agent) external onlyOperator {
         require(
             agents[agent].isActive || !agents[agent].isActive,
             "Agent doesn't exist"
@@ -347,17 +366,23 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         emit AgentDeleted(agent);
     }
 
-    function blockWallet(address wallet) external onlyOwner {
+    function approveAgent(address agent) external onlyOperator {
+        require(!agents[agent].isActive, "Agent is active");
+        agents[agent].isActive = true;
+        emit AgentApproved(agent);
+    }
+
+    function blockWallet(address wallet) external onlyOperator {
         blockedWallets[wallet] = true;
         emit WalletBlocked(wallet);
     }
 
-    function unblockWallet(address wallet) external onlyOwner {
+    function unblockWallet(address wallet) external onlyOperator {
         blockedWallets[wallet] = false;
         emit WalletUnblocked(wallet);
     }
 
-    function cancelTrade(bytes32 tradeId) external {
+    function cancelTrade(bytes32 tradeId) external notBlocked {
         Trade storage trade = trades[tradeId];
         require(msg.sender == trade.creator, "Not trade creator");
         require(trade.status == TradeStatus.Open, "Trade not open");
@@ -425,30 +450,6 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         require(usdtToken.transfer(owner(), balance), "Transfer failed");
 
         emit EmergencyWithdrawal(balance);
-    }
-
-    function getAgentClients(
-        address agent
-    ) external view returns (address[] memory) {
-        return agentToClients[agent];
-    }
-
-    function removeClientAssignment(address client) external {
-        require(
-            msg.sender == clientToAgent[client] || msg.sender == owner(),
-            "Not authorized"
-        );
-
-        address[] storage clients = agentToClients[clientToAgent[client]];
-        for (uint i = 0; i < clients.length; i++) {
-            if (clients[i] == client) {
-                clients[i] = clients[clients.length - 1];
-                clients.pop();
-                break;
-            }
-        }
-
-        delete clientToAgent[client];
     }
 
     function calculateFees(
