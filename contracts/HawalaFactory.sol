@@ -5,9 +5,11 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./AgentManager.sol";
 
 contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     IERC20 public usdtToken;
+    AgentManager public agentManager;
     address private operator;
 
     struct Trade {
@@ -20,15 +22,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         bool isMarketPrice; // true if market price, false if fixed
         TradeStatus status;
         uint256 creationTime;
-        uint256 btcFee; // Fee in satoshis
-        uint256 usdtFee; // Fee converted to USDT in wei
         string btcAddress;
-    }
-
-    struct Agent {
-        bool isActive;
-        uint256 commissionRate;
-        uint256 totalCommission;
     }
 
     enum TradeStatus {
@@ -37,24 +31,19 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         Cancelled
     }
 
-    // Constants
     uint256 public constant MARKET_TRADE_TIMEOUT = 1 hours;
     uint256 public constant FIXED_TRADE_TIMEOUT = 24 hours;
 
-    // Configurable parameters
     uint256 public marketFee = 25; // 0.25%
     uint256 public fixedFee = 200; // 2.00%
     uint256 public cashback_rate;
     uint256 public minMarketTradeSize;
     uint256 public minFixedTradeSize;
     uint256 public largeOrderThreshold;
+    uint256 public platformUSDTFees;
 
     mapping(bytes32 => Trade) public trades;
-    mapping(address => uint256) public tradingVolume;
     mapping(address => bool) public blockedWallets;
-    mapping(address => address[]) public agentToClients;
-    mapping(address => address) private clientToAgent;
-    mapping(address => Agent) public agents;
     mapping(address => bool) public operators;
 
     bytes32[] public allTradeIds;
@@ -78,8 +67,6 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     event TradingResumed(uint256 timestamp);
     event WalletBlocked(address indexed wallet);
     event WalletUnblocked(address indexed wallet);
-    event AgentRegistered(address indexed agent, uint256 commissionRate);
-    event ClientAssigned(address indexed client, address indexed agent);
     event TradeSizeUpdated(
         uint256 minMarketTradeSize,
         uint256 minFixedTradeSize
@@ -87,11 +74,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     event FeesUpdated(uint256 minMarketFee, uint256 minFixedFee);
     event CashbackUpdated(uint256 cashback_rate);
     event LargeOrderThresholdUpdated(uint256 largeOrderThreshold);
-    event FeesWithdrawn(uint256 fees);
+    event FeesWithdrawn(uint256 usdtFees);
     event EmergencyWithdrawal(uint256 withdrawn_amount);
-    event AgentSuspended(address indexed agent);
-    event AgentDeleted(address indexed agent);
-    event AgentApproved(address indexed agent);
     event OperatorUpdated(address indexed operator, bool status);
 
     modifier notBlocked() {
@@ -149,8 +133,6 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                 ? TradeStatus.Cancelled
                 : TradeStatus.Open,
             creationTime: block.timestamp,
-            btcFee: 0,
-            usdtFee: 0,
             btcAddress: btcAddress
         });
 
@@ -188,25 +170,18 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         uint256 usdtAmount = (amount * trade.price) / 1e18;
         require(usdtAmount <= trade.usdtAmount, "Invalid USDT amount");
 
-        (uint256 btcFee, uint256 usdtFee) = calculateFees(
+        uint256 usdtFee = calculateFees(
             amount,
             trade.price,
             trade.isMarketPrice
         );
 
-        trade.btcFee = btcFee;
-        trade.usdtFee = usdtFee;
+        agentManager.recordTrade(msg.sender, amount, usdtAmount);
 
-        address agent = clientToAgent[msg.sender];
-        if (agent != address(0) && agents[agent].isActive) {
-            uint256 agentCommission = (usdtFee * agents[agent].commissionRate) /
-                10000;
-            agents[agent].totalCommission += agentCommission;
-            require(
-                usdtToken.transfer(agent, agentCommission),
-                "Agent commission transfer failed"
-            );
-        }
+        (bool hasAgent, uint256 commission) = agentManager.addCommission(
+            msg.sender,
+            usdtFee
+        );
 
         uint256 amountAfterFee = usdtAmount - usdtFee;
 
@@ -219,11 +194,37 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                 usdtToken.transfer(trade.creator, amountAfterFee),
                 "USDT transfer failed"
             );
+
+            if (hasAgent) {
+                require(
+                    usdtToken.transfer(
+                        agentManager.getAgentAddress(msg.sender),
+                        commission
+                    ),
+                    "Commission transfer failed"
+                );
+                platformUSDTFees += (usdtFee - commission);
+            } else {
+                platformUSDTFees += usdtFee;
+            }
         } else {
             require(
                 usdtToken.transfer(msg.sender, amountAfterFee),
                 "USDT transfer failed"
             );
+
+            if (hasAgent) {
+                require(
+                    usdtToken.transfer(
+                        agentManager.getAgentAddress(msg.sender),
+                        commission
+                    ),
+                    "Commission transfer failed"
+                );
+                platformUSDTFees += (usdtFee - commission);
+            } else {
+                platformUSDTFees += usdtFee;
+            }
         }
 
         if (trade.isMarketPrice && cashback_rate > 0) {
@@ -234,8 +235,6 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             );
         }
 
-        tradingVolume[msg.sender] += usdtAmount;
-        tradingVolume[trade.creator] += usdtAmount;
         trade.btcAmount -= amount;
         trade.usdtAmount -= usdtAmount;
 
@@ -312,64 +311,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         emit OperatorUpdated(_operator, _status);
     }
 
-    function registerAgent(
-        address agent,
-        uint256 commissionRate
-    ) external onlyOperator {
-        require(commissionRate <= 7500, "Max 75% commission");
-        require(!agents[agent].isActive, "Agent already registered");
-
-        agents[agent] = Agent({
-            isActive: true,
-            commissionRate: commissionRate,
-            totalCommission: 0
-        });
-        emit AgentRegistered(agent, commissionRate);
-    }
-
-    function assignClientToAgent(address client) external onlyOperator {
-        require(agents[msg.sender].isActive, "Invalid agent");
-        require(clientToAgent[client] == address(0), "Client already assigned");
-        clientToAgent[client] = msg.sender;
-        agentToClients[msg.sender].push(client);
-
-        emit ClientAssigned(client, msg.sender);
-    }
-
-    function suspendAgent(address agent) external onlyOperator {
-        require(agents[agent].isActive, "Agent not active");
-        agents[agent].isActive = false;
-        emit AgentSuspended(agent);
-    }
-
-    function deleteAgent(address agent) external onlyOperator {
-        require(
-            agents[agent].isActive || !agents[agent].isActive,
-            "Agent doesn't exist"
-        );
-
-        if (agents[agent].totalCommission > 0) {
-            require(
-                usdtToken.transfer(agent, agents[agent].totalCommission),
-                "Commission transfer failed"
-            );
-        }
-
-        address[] storage clients = agentToClients[agent];
-        for (uint i = 0; i < clients.length; i++) {
-            delete clientToAgent[clients[i]];
-        }
-
-        delete agentToClients[agent];
-        delete agents[agent];
-
-        emit AgentDeleted(agent);
-    }
-
-    function approveAgent(address agent) external onlyOperator {
-        require(!agents[agent].isActive, "Agent is active");
-        agents[agent].isActive = true;
-        emit AgentApproved(agent);
+    function setAgentManager(address _agentManager) external onlyOwner {
+        agentManager = AgentManager(_agentManager);
     }
 
     function blockWallet(address wallet) external onlyOperator {
@@ -439,10 +382,14 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         _unpause();
     }
 
-    function withdrawFees(uint256 amount) external onlyOwner {
-        require(usdtToken.transfer(owner(), amount), "Transfer failed");
+    function withdrawFees() external onlyOwner {
+        uint256 usdtFees = platformUSDTFees;
 
-        emit FeesWithdrawn(amount);
+        platformUSDTFees = 0;
+
+        require(usdtToken.transfer(owner(), usdtFees), "Transfer failed");
+
+        emit FeesWithdrawn(usdtFees);
     }
 
     function emergencyWithdraw() external onlyOwner whenPaused {
@@ -456,9 +403,9 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         uint256 btcAmount,
         uint256 price,
         bool isMarketPrice
-    ) internal view returns (uint256 btcFee, uint256 usdtFee) {
+    ) internal view returns (uint256 usdtFee) {
         uint256 feeRate = isMarketPrice ? marketFee : fixedFee;
-        btcFee = (btcAmount * feeRate) / 10000;
+        uint256 btcFee = (btcAmount * feeRate) / 10000;
 
         usdtFee = (btcFee * price) / 1e8;
     }

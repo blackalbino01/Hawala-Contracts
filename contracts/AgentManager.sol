@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract AgentManager is Ownable, ReentrancyGuard {
+    IERC20 public usdtToken;
+    address public hawalaFactory;
+    address[] public allAgents;
+
+    mapping(address => bool) public operators;
+
+    struct Agent {
+        bool isActive;
+        uint256 commissionRate; // in basis points (e.g., 250 = 2.5%)
+        uint256 totalCommission;
+    }
+
+    mapping(address => Agent) public agents;
+    mapping(address => address) public clientToAgent;
+
+    mapping(address => uint256) public agentBtcVolume;
+    mapping(address => uint256) public agentUsdtVolume;
+
+    event AgentRegistered(address indexed agent, uint256 commissionRate);
+    event AgentSuspended(address indexed agent);
+    event AgentApproved(address indexed agent);
+    event AgentDeleted(address indexed agent);
+    event CommissionEarned(
+        address indexed agent,
+        address indexed client,
+        uint256 amount
+    );
+    event OperatorUpdated(address indexed operator, bool status);
+
+    modifier onlyOperator() {
+        require(
+            operators[msg.sender] || msg.sender == owner(),
+            "Not authorized: operator only"
+        );
+        _;
+    }
+
+    modifier onlyFactory() {
+        require(msg.sender == hawalaFactory, "Not authorized: factory only");
+        _;
+    }
+
+    constructor(
+        address _usdtToken,
+        address initialOwner
+    ) Ownable(initialOwner) {
+        usdtToken = IERC20(_usdtToken);
+    }
+
+    function setHawalaFactory(address _factory) external onlyOwner {
+        hawalaFactory = _factory;
+    }
+
+    function setOperator(address _operator, bool _status) external onlyOwner {
+        operators[_operator] = _status;
+        emit OperatorUpdated(_operator, _status);
+    }
+
+    function registerAgent(
+        address agent,
+        uint256 commissionRate
+    ) external onlyOperator {
+        require(agent != address(0), "Invalid agent address");
+        require(commissionRate <= 1000, "Commission rate too high"); // Max 10%
+        require(!agents[agent].isActive, "Agent already registered");
+
+        agents[agent] = Agent({
+            isActive: true,
+            commissionRate: commissionRate,
+            totalCommission: 0
+        });
+
+        allAgents.push(agent);
+        emit AgentRegistered(agent, commissionRate);
+    }
+
+    function suspendAgent(address agent) external onlyOperator {
+        require(agents[agent].isActive, "Agent not active");
+        agents[agent].isActive = false;
+        emit AgentSuspended(agent);
+    }
+
+    function approveAgent(address agent) external onlyOperator {
+        require(!agents[agent].isActive, "Agent already active");
+        require(agents[agent].commissionRate > 0, "Agent not registered");
+        agents[agent].isActive = true;
+        emit AgentApproved(agent);
+    }
+
+    function deleteAgent(address agent) external onlyOperator {
+        require(
+            agents[agent].isActive || !agents[agent].isActive,
+            "Agent doesn't exist"
+        );
+
+        delete agents[agent];
+
+        emit AgentDeleted(agent);
+    }
+
+    function recordTrade(
+        address trader,
+        uint256 btcAmount,
+        uint256 usdtAmount
+    ) external onlyFactory {
+        address agent = clientToAgent[trader];
+        if (agent != address(0) && agents[agent].isActive) {
+            agentBtcVolume[agent] += btcAmount;
+            agentUsdtVolume[agent] += usdtAmount;
+        }
+    }
+
+    function addCommission(
+        address trader,
+        uint256 amount
+    ) external onlyFactory returns (bool, uint256) {
+        address agent = clientToAgent[trader];
+        if (agent != address(0) && agents[agent].isActive) {
+            uint256 commission = (amount * agents[agent].commissionRate) /
+                10000;
+            agents[agent].totalCommission += commission;
+            emit CommissionEarned(agent, trader, commission);
+            return (true, commission);
+        }
+        return (false, 0);
+    }
+
+    function getAgentAddress(
+        address trader
+    ) external view onlyFactory returns (address) {
+        return clientToAgent[trader];
+    }
+
+    function getAllAgentsData()
+        external
+        view
+        returns (
+            address[] memory agentAddresses,
+            bool[] memory isActive,
+            uint256[] memory commissionRates,
+            uint256[] memory totalCommissions,
+            uint256[] memory btcVolumes,
+            uint256[] memory usdtVolumes
+        )
+    {
+        uint256 agentCount = allAgents.length;
+
+        agentAddresses = new address[](agentCount);
+        isActive = new bool[](agentCount);
+        commissionRates = new uint256[](agentCount);
+        totalCommissions = new uint256[](agentCount);
+        btcVolumes = new uint256[](agentCount);
+        usdtVolumes = new uint256[](agentCount);
+
+        for (uint256 i = 0; i < agentCount; i++) {
+            address agentAddr = allAgents[i];
+            agentAddresses[i] = agentAddr;
+            isActive[i] = agents[agentAddr].isActive;
+            commissionRates[i] = agents[agentAddr].commissionRate;
+            totalCommissions[i] = agents[agentAddr].totalCommission;
+            btcVolumes[i] = agentBtcVolume[agentAddr];
+            usdtVolumes[i] = agentUsdtVolume[agentAddr];
+        }
+
+        return (
+            agentAddresses,
+            isActive,
+            commissionRates,
+            totalCommissions,
+            btcVolumes,
+            usdtVolumes
+        );
+    }
+}
