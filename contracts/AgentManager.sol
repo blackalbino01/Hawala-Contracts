@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract AgentManager is Ownable, ReentrancyGuard {
-    IERC20 public usdtToken;
     address public hawalaFactory;
     address[] public allAgents;
 
@@ -28,6 +27,7 @@ contract AgentManager is Ownable, ReentrancyGuard {
     event AgentSuspended(address indexed agent);
     event AgentApproved(address indexed agent);
     event AgentDeleted(address indexed agent);
+    event AgentUpdated(address indexed agent, uint256 commissionRate);
     event CommissionEarned(
         address indexed agent,
         address indexed client,
@@ -48,12 +48,7 @@ contract AgentManager is Ownable, ReentrancyGuard {
         _;
     }
 
-    constructor(
-        address _usdtToken,
-        address initialOwner
-    ) Ownable(initialOwner) {
-        usdtToken = IERC20(_usdtToken);
-    }
+    constructor(address initialOwner) Ownable(initialOwner) {}
 
     function setHawalaFactory(address _factory) external onlyOwner {
         hawalaFactory = _factory;
@@ -86,6 +81,15 @@ contract AgentManager is Ownable, ReentrancyGuard {
         require(agents[agent].isActive, "Agent not active");
         agents[agent].isActive = false;
         emit AgentSuspended(agent);
+    }
+
+    function updateAgent(
+        address agent,
+        uint256 newCommission
+    ) external onlyOperator {
+        require(agents[agent].isActive, "Agent not active");
+        agents[agent].commissionRate = newCommission;
+        emit AgentUpdated(agent, newCommission);
     }
 
     function approveAgent(address agent) external onlyOperator {
