@@ -269,7 +269,17 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     {
         uint256 count = 0;
         for (uint256 i = 0; i < allTradeIds.length; i++) {
-            if (trades[allTradeIds[i]].status == TradeStatus.Open) {
+            Trade storage trade = trades[allTradeIds[i]];
+            bool isExpired = block.timestamp >
+                trade.creationTime +
+                    (
+                        trade.isMarketPrice
+                            ? MARKET_TRADE_TIMEOUT
+                            : FIXED_TRADE_TIMEOUT
+                    );
+            if (
+                trades[allTradeIds[i]].status == TradeStatus.Open && !isExpired
+            ) {
                 count++;
             }
         }
@@ -287,7 +297,14 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         uint256 index = 0;
         for (uint256 i = 0; i < allTradeIds.length; i++) {
             Trade storage trade = trades[allTradeIds[i]];
-            if (trade.status == TradeStatus.Open) {
+            bool isExpired = block.timestamp >
+                trade.creationTime +
+                    (
+                        trade.isMarketPrice
+                            ? MARKET_TRADE_TIMEOUT
+                            : FIXED_TRADE_TIMEOUT
+                    );
+            if (trade.status == TradeStatus.Open && !isExpired) {
                 orderIds[index] = allTradeIds[i];
                 prices[index] = trade.price;
                 usdtAmounts[index] = trade.usdtAmount;
@@ -298,6 +315,59 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                 btcAddresses[index] = trade.btcAddress;
                 statusses[index] = trade.status;
 
+                index++;
+            }
+        }
+    }
+
+    function getUserAllOrders(
+        address user
+    )
+        external
+        view
+        returns (
+            bytes32[] memory orderIds,
+            uint256[] memory prices,
+            uint256[] memory usdtAmounts,
+            uint256[] memory btcAmounts,
+            bool[] memory isBTCtoUSDTs,
+            bool[] memory isMarketPrices,
+            string[] memory btcAddresses,
+            TradeStatus[] memory statuses,
+            uint256[] memory creationTimes
+        )
+    {
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < allTradeIds.length; i++) {
+            if (trades[allTradeIds[i]].creator == user) {
+                count++;
+            }
+        }
+
+        orderIds = new bytes32[](count);
+        prices = new uint256[](count);
+        usdtAmounts = new uint256[](count);
+        btcAmounts = new uint256[](count);
+        isBTCtoUSDTs = new bool[](count);
+        isMarketPrices = new bool[](count);
+        btcAddresses = new string[](count);
+        statuses = new TradeStatus[](count);
+        creationTimes = new uint256[](count);
+
+        uint256 index = 0;
+        for (uint256 i = 0; i < allTradeIds.length; i++) {
+            Trade storage trade = trades[allTradeIds[i]];
+            if (trade.creator == user) {
+                orderIds[index] = trade.id;
+                prices[index] = trade.price;
+                usdtAmounts[index] = trade.usdtAmount;
+                btcAmounts[index] = trade.btcAmount;
+                isBTCtoUSDTs[index] = trade.isBTCtoUSDT;
+                isMarketPrices[index] = trade.isMarketPrice;
+                btcAddresses[index] = trade.btcAddress;
+                statuses[index] = trade.status;
+                creationTimes[index] = trade.creationTime;
                 index++;
             }
         }

@@ -28,6 +28,7 @@ contract AgentManager is Ownable, ReentrancyGuard {
     event AgentApproved(address indexed agent);
     event AgentDeleted(address indexed agent);
     event AgentUpdated(address indexed agent, uint256 commissionRate);
+    event ClientAssigned(address indexed client, address indexed agent);
     event CommissionEarned(
         address indexed agent,
         address indexed client,
@@ -108,6 +109,15 @@ contract AgentManager is Ownable, ReentrancyGuard {
         delete agents[agent];
 
         emit AgentDeleted(agent);
+    }
+
+    function assignClientToAgent(
+        address client,
+        address agent
+    ) external onlyOperator {
+        require(agents[agent].isActive, "Agent not active");
+        clientToAgent[client] = agent;
+        emit ClientAssigned(client, agent);
     }
 
     function recordTrade(
