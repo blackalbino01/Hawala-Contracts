@@ -90,9 +90,11 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
     constructor(
         address _usdtToken,
-        address initialOwner
+        address initialOwner,
+        address _agentManager
     ) Ownable(initialOwner) {
         usdtToken = IERC20(_usdtToken);
+        agentManager = AgentManager(_agentManager);
     }
 
     function createTrade(
