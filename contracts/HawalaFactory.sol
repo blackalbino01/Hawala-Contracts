@@ -178,14 +178,17 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             trade.isMarketPrice
         );
 
-        agentManager.recordTrade(msg.sender, amount, usdtAmount);
+        require(usdtFee <= usdtAmount, "Fee exceeds trade amount");
+        uint256 amountAfterFee = usdtAmount - usdtFee;
 
         (bool hasAgent, uint256 commission) = agentManager.addCommission(
             msg.sender,
             usdtFee
         );
 
-        uint256 amountAfterFee = usdtAmount - usdtFee;
+        require(commission <= usdtFee, "Commission exceeds fee");
+
+        agentManager.recordTrade(msg.sender, amount, usdtAmount);
 
         if (trade.isBTCtoUSDT) {
             require(
@@ -432,7 +435,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     }
 
     function setCashBack(uint256 _cashback) external onlyOwner {
-        require(_cashback > 0, "Invalid cashback");
+        require(_cashback <= 100, "Cashback rate cannot exceed 100%");
         cashback_rate = _cashback;
 
         emit CashbackUpdated(_cashback);
@@ -477,8 +480,6 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         bool isMarketPrice
     ) internal view returns (uint256 usdtFee) {
         uint256 feeRate = isMarketPrice ? marketFee : fixedFee;
-        uint256 btcFee = (btcAmount * feeRate) / 10000;
-
-        usdtFee = (btcFee * price) / 1e8;
+        usdtFee = (btcAmount * price * feeRate) / (10000 * 1e8);
     }
 }

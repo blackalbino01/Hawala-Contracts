@@ -65,7 +65,7 @@ contract AgentManager is Ownable, ReentrancyGuard {
         uint256 commissionRate
     ) external onlyOperator {
         require(agent != address(0), "Invalid agent address");
-        require(commissionRate <= 1000, "Commission rate too high"); // Max 10%
+        require(commissionRate <= 2500, "Max 25% commission");
         require(!agents[agent].isActive, "Agent already registered");
 
         agents[agent] = Agent({
@@ -151,6 +151,10 @@ contract AgentManager is Ownable, ReentrancyGuard {
         address trader
     ) external view onlyFactory returns (address) {
         return clientToAgent[trader];
+    }
+
+    function isClientAssigned(address client) external view returns (bool) {
+        return clientToAgent[client] != address(0);
     }
 
     function getAllAgentsData()
