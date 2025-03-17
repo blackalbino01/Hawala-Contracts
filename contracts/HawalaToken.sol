@@ -21,7 +21,7 @@ contract HawalaToken is ERC20, Ownable {
         public vestingSchedules;
     mapping(address => uint8[]) public userRounds;
 
-    constructor() Ownable(msg.sender) ERC20("HawalaDex token", "HAWALA") {
+    constructor() Ownable(msg.sender) ERC20("HawalaDex Token", "HAW") {
         _mint(msg.sender, 1_000_000_000 * 10 ** decimals());
     }
 

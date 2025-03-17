@@ -15,11 +15,13 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     struct Trade {
         bytes32 id;
         address creator;
-        uint256 btcAmount; // Amount in wei (1e18)
-        uint256 usdtAmount; // Amount in wei (1e18)
-        uint256 price; // USDT per BTC in wei
-        bool isBTCtoUSDT; // true if market price, false if fixed
-        bool isMarketPrice; // true if market price, false if fixed
+        uint256 btcAmount;
+        uint256 usdtAmount;
+        uint256 initialBtcAmount;
+        uint256 initialUsdtAmount;
+        uint256 price;
+        bool isBTCToUSDT;
+        bool isMarketPrice;
         TradeStatus status;
         uint256 creationTime;
         string btcAddress;
@@ -33,6 +35,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
     uint256 public constant MARKET_TRADE_TIMEOUT = 1 hours;
     uint256 public constant FIXED_TRADE_TIMEOUT = 24 hours;
+    uint256 public constant MIN_RESIDUAL = 10000000000000; // 0.00001 BTC
 
     uint256 public marketFee = 25; // 0.25%
     uint256 public fixedFee = 200; // 2.00%
@@ -52,7 +55,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         bytes32 indexed tradeId,
         address indexed creator,
         bool isMarketPrice,
-        bool isBTCtoUSDT
+        bool isBTCToUSDT
     );
     event TradeExecuted(
         bytes32 indexed tradeId,
@@ -63,6 +66,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         uint256 remainingBtcAmount
     );
     event TradeCancelled(bytes32 indexed tradeId);
+    event TradeAutoCancelled(bytes32 indexed tradeId);
     event TradingPaused(uint256 timestamp);
     event TradingResumed(uint256 timestamp);
     event WalletBlocked(address indexed wallet);
@@ -84,7 +88,10 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
     }
 
     modifier onlyOperator() {
-        require(operators[msg.sender], "Not authorized");
+        require(
+            operators[msg.sender] || msg.sender == owner(),
+            "Not authorized"
+        );
         _;
     }
 
@@ -101,7 +108,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         uint256 btcAmount,
         uint256 usdtAmount,
         uint256 price,
-        bool isBTCtoUSDT,
+        bool isBTCToUSDT,
         bool isMarketPrice,
         string memory btcAddress
     ) external nonReentrant whenNotPaused returns (bytes32) {
@@ -128,8 +135,10 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             creator: msg.sender,
             btcAmount: btcAmount,
             usdtAmount: usdtAmount,
+            initialBtcAmount: btcAmount,
+            initialUsdtAmount: usdtAmount,
             price: price,
-            isBTCtoUSDT: isBTCtoUSDT,
+            isBTCToUSDT: isBTCToUSDT,
             isMarketPrice: isMarketPrice,
             status: blockedWallets[msg.sender]
                 ? TradeStatus.Cancelled
@@ -140,14 +149,14 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
         allTradeIds.push(tradeId);
 
-        if (!isBTCtoUSDT) {
+        if (!isBTCToUSDT) {
             require(
                 usdtToken.transferFrom(msg.sender, address(this), usdtAmount),
                 "USDT transfer to escrow failed"
             );
         }
 
-        emit TradeCreated(tradeId, msg.sender, isMarketPrice, isBTCtoUSDT);
+        emit TradeCreated(tradeId, msg.sender, isMarketPrice, isBTCToUSDT);
         return tradeId;
     }
 
@@ -190,7 +199,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
         agentManager.recordTrade(msg.sender, amount, usdtAmount);
 
-        if (trade.isBTCtoUSDT) {
+        if (trade.isBTCToUSDT) {
             require(
                 usdtToken.transferFrom(msg.sender, address(this), usdtAmount),
                 "USDT transfer failed"
@@ -243,8 +252,20 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         trade.btcAmount -= amount;
         trade.usdtAmount -= usdtAmount;
 
-        if (trade.btcAmount == 0) {
+        if (trade.btcAmount == 0 || trade.btcAmount < MIN_RESIDUAL) {
             trade.status = TradeStatus.Completed;
+            if (trade.btcAmount > 0) {
+                if (!trade.isBTCToUSDT) {
+                    uint256 residualUSDT = (trade.btcAmount * trade.price) /
+                        1e18;
+                    require(
+                        usdtToken.transfer(trade.creator, residualUSDT),
+                        "Transfer failed"
+                    );
+                }
+
+                emit TradeAutoCancelled(tradeId);
+            }
         }
 
         emit TradeExecuted(
@@ -265,7 +286,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             uint256[] memory prices,
             uint256[] memory usdtAmounts,
             uint256[] memory btcAmounts,
-            bool[] memory isBTCtoUSDTs,
+            bool[] memory isBTCToUSDTs,
             bool[] memory isMarketPrices,
             address[] memory creators,
             string[] memory btcAddresses,
@@ -293,7 +314,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         prices = new uint256[](count);
         usdtAmounts = new uint256[](count);
         btcAmounts = new uint256[](count);
-        isBTCtoUSDTs = new bool[](count);
+        isBTCToUSDTs = new bool[](count);
         isMarketPrices = new bool[](count);
         creators = new address[](count);
         btcAddresses = new string[](count);
@@ -314,7 +335,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                 prices[index] = trade.price;
                 usdtAmounts[index] = trade.usdtAmount;
                 btcAmounts[index] = trade.btcAmount;
-                isBTCtoUSDTs[index] = trade.isBTCtoUSDT;
+                isBTCToUSDTs[index] = trade.isBTCToUSDT;
                 isMarketPrices[index] = trade.isMarketPrice;
                 creators[index] = trade.creator;
                 btcAddresses[index] = trade.btcAddress;
@@ -335,7 +356,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             uint256[] memory prices,
             uint256[] memory usdtAmounts,
             uint256[] memory btcAmounts,
-            bool[] memory isBTCtoUSDTs,
+            bool[] memory isBTCToUSDTs,
             bool[] memory isMarketPrices,
             string[] memory btcAddresses,
             TradeStatus[] memory statuses,
@@ -354,7 +375,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         prices = new uint256[](count);
         usdtAmounts = new uint256[](count);
         btcAmounts = new uint256[](count);
-        isBTCtoUSDTs = new bool[](count);
+        isBTCToUSDTs = new bool[](count);
         isMarketPrices = new bool[](count);
         btcAddresses = new string[](count);
         statuses = new TradeStatus[](count);
@@ -366,9 +387,13 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             if (trade.creator == user) {
                 orderIds[index] = trade.id;
                 prices[index] = trade.price;
-                usdtAmounts[index] = trade.usdtAmount;
-                btcAmounts[index] = trade.btcAmount;
-                isBTCtoUSDTs[index] = trade.isBTCtoUSDT;
+                usdtAmounts[index] = trade.status == TradeStatus.Completed
+                    ? trade.initialUsdtAmount
+                    : trade.usdtAmount;
+                btcAmounts[index] = trade.status == TradeStatus.Completed
+                    ? trade.initialBtcAmount
+                    : trade.btcAmount;
+                isBTCToUSDTs[index] = trade.isBTCToUSDT;
                 isMarketPrices[index] = trade.isMarketPrice;
                 btcAddresses[index] = trade.btcAddress;
                 statuses[index] = trade.status;
@@ -390,14 +415,28 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         agentManager = AgentManager(_agentManager);
     }
 
-    function blockWallet(address wallet) external onlyOperator {
-        blockedWallets[wallet] = true;
-        emit WalletBlocked(wallet);
+    function blockWallet(address[] calldata _addresses) external onlyOperator {
+        require(_addresses.length > 0, "Empty address array");
+        require(_addresses.length <= 100, "Array too large");
+
+        for (uint256 i = 0; i < _addresses.length; i++) {
+            require(!blockedWallets[_addresses[i]], "Address already blocked");
+            blockedWallets[_addresses[i]] = true;
+            emit WalletBlocked(_addresses[i]);
+        }
     }
 
-    function unblockWallet(address wallet) external onlyOperator {
-        blockedWallets[wallet] = false;
-        emit WalletUnblocked(wallet);
+    function unblockWallet(
+        address[] calldata _addresses
+    ) external onlyOperator {
+        require(_addresses.length > 0, "Empty address array");
+        require(_addresses.length <= 100, "Array too large");
+        for (uint256 i = 0; i < _addresses.length; i++) {
+            require(blockedWallets[_addresses[i]], "Address already unblocked");
+            blockedWallets[_addresses[i]] = false;
+            emit WalletUnblocked(_addresses[i]);
+            (_addresses[i]);
+        }
     }
 
     function cancelTrade(bytes32 tradeId) external notBlocked {
@@ -407,7 +446,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
         trade.status = TradeStatus.Cancelled;
 
-        if (!trade.isBTCtoUSDT) {
+        if (!trade.isBTCToUSDT) {
             require(
                 usdtToken.transfer(trade.creator, trade.usdtAmount),
                 "USDT return failed"
@@ -480,6 +519,6 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         bool isMarketPrice
     ) internal view returns (uint256 usdtFee) {
         uint256 feeRate = isMarketPrice ? marketFee : fixedFee;
-        usdtFee = (btcAmount * price * feeRate) / (10000 * 1e8);
+        usdtFee = (btcAmount * price * feeRate) / (10000 * 1e18);
     }
 }

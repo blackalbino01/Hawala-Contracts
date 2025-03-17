@@ -15,6 +15,8 @@ contract AgentManager is Ownable, ReentrancyGuard {
         bool isActive;
         uint256 commissionRate; // in basis points (e.g., 250 = 2.5%)
         uint256 totalCommission;
+        uint256 totalBtcVolume;
+        uint256 totalUsdtVolume;
     }
 
     mapping(address => Agent) public agents;
@@ -23,11 +25,11 @@ contract AgentManager is Ownable, ReentrancyGuard {
     mapping(address => uint256) public agentBtcVolume;
     mapping(address => uint256) public agentUsdtVolume;
 
-    event AgentRegistered(address indexed agent, uint256 commissionRate);
     event AgentSuspended(address indexed agent);
     event AgentApproved(address indexed agent);
     event AgentDeleted(address indexed agent);
     event AgentUpdated(address indexed agent, uint256 commissionRate);
+    event AgentRegistered(address indexed agent, uint256 commissionRate);
     event ClientAssigned(address indexed client, address indexed agent);
     event CommissionEarned(
         address indexed agent,
@@ -59,25 +61,6 @@ contract AgentManager is Ownable, ReentrancyGuard {
         operators[_operator] = _status;
         emit OperatorUpdated(_operator, _status);
     }
-
-    function registerAgent(
-        address agent,
-        uint256 commissionRate
-    ) external onlyOperator {
-        require(agent != address(0), "Invalid agent address");
-        require(commissionRate <= 2500, "Max 25% commission");
-        require(!agents[agent].isActive, "Agent already registered");
-
-        agents[agent] = Agent({
-            isActive: true,
-            commissionRate: commissionRate,
-            totalCommission: 0
-        });
-
-        allAgents.push(agent);
-        emit AgentRegistered(agent, commissionRate);
-    }
-
     function suspendAgent(address agent) external onlyOperator {
         require(agents[agent].isActive, "Agent not active");
         agents[agent].isActive = false;
@@ -89,24 +72,47 @@ contract AgentManager is Ownable, ReentrancyGuard {
         uint256 newCommission
     ) external onlyOperator {
         require(agents[agent].isActive, "Agent not active");
+        require(newCommission <= 7500, "Commission rate too high");
         agents[agent].commissionRate = newCommission;
         emit AgentUpdated(agent, newCommission);
     }
 
-    function approveAgent(address agent) external onlyOperator {
-        require(!agents[agent].isActive, "Agent already active");
-        require(agents[agent].commissionRate > 0, "Agent not registered");
-        agents[agent].isActive = true;
-        emit AgentApproved(agent);
+    function approveAgent(
+        address agent,
+        uint256 commissionRate
+    ) external onlyOperator {
+        require(agent != address(0), "Invalid agent address");
+        require(commissionRate <= 7500, "Commission rate too high");
+        require(!agents[agent].isActive, "Agent already registered and active");
+
+        if (agents[agent].commissionRate == 0) {
+            allAgents.push(agent);
+            agents[agent] = Agent({
+                isActive: true,
+                commissionRate: commissionRate,
+                totalCommission: 0,
+                totalBtcVolume: 0,
+                totalUsdtVolume: 0
+            });
+
+            emit AgentRegistered(agent, commissionRate);
+        } else {
+            agents[agent].isActive = true;
+            emit AgentApproved(agent);
+        }
     }
 
     function deleteAgent(address agent) external onlyOperator {
-        require(
-            agents[agent].isActive || !agents[agent].isActive,
-            "Agent doesn't exist"
-        );
-
+        require(agents[agent].commissionRate > 0, "Agent not registered");
         delete agents[agent];
+
+        for (uint i = 0; i < allAgents.length; i++) {
+            if (allAgents[i] == agent) {
+                allAgents[i] = allAgents[allAgents.length - 1];
+                allAgents.pop();
+                break;
+            }
+        }
 
         emit AgentDeleted(agent);
     }
@@ -127,8 +133,8 @@ contract AgentManager is Ownable, ReentrancyGuard {
     ) external onlyFactory {
         address agent = clientToAgent[trader];
         if (agent != address(0) && agents[agent].isActive) {
-            agentBtcVolume[agent] += btcAmount;
-            agentUsdtVolume[agent] += usdtAmount;
+            agents[agent].totalBtcVolume += btcAmount;
+            agents[agent].totalUsdtVolume += usdtAmount;
         }
     }
 
@@ -184,8 +190,8 @@ contract AgentManager is Ownable, ReentrancyGuard {
             isActive[i] = agents[agentAddr].isActive;
             commissionRates[i] = agents[agentAddr].commissionRate;
             totalCommissions[i] = agents[agentAddr].totalCommission;
-            btcVolumes[i] = agentBtcVolume[agentAddr];
-            usdtVolumes[i] = agentUsdtVolume[agentAddr];
+            btcVolumes[i] = agents[agentAddr].totalBtcVolume;
+            usdtVolumes[i] = agents[agentAddr].totalUsdtVolume;
         }
 
         return (
