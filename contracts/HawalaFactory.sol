@@ -149,6 +149,17 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
         allTradeIds.push(tradeId);
 
+        address agent = agentManager.getAgentAddress(msg.sender);
+
+        if (agent != address(0)) {
+            agentManager.recordTrade(
+                msg.sender,
+                btcAmount,
+                usdtAmount,
+                isBTCToUSDT
+            );
+        }
+
         if (!isBTCToUSDT) {
             require(
                 usdtToken.transferFrom(msg.sender, address(this), usdtAmount),
@@ -190,14 +201,24 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         require(usdtFee <= usdtAmount, "Fee exceeds trade amount");
         uint256 amountAfterFee = usdtAmount - usdtFee;
 
-        (bool hasAgent, uint256 commission) = agentManager.addCommission(
-            msg.sender,
-            usdtFee
+        (bool hasExecutorAgent, uint256 executorCommission) = agentManager
+            .addCommission(msg.sender, usdtFee);
+        (bool hasCreatorAgent, uint256 creatorCommission) = agentManager
+            .addCommission(trade.creator, usdtFee);
+
+        require(
+            (executorCommission + creatorCommission) <= usdtFee,
+            "Total commission exceeds fee"
         );
 
-        require(commission <= usdtFee, "Commission exceeds fee");
-
-        agentManager.recordTrade(msg.sender, amount, usdtAmount);
+        if (hasExecutorAgent) {
+            agentManager.recordTrade(
+                msg.sender,
+                amount,
+                usdtAmount,
+                !trade.isBTCToUSDT
+            );
+        }
 
         if (trade.isBTCToUSDT) {
             require(
@@ -209,36 +230,46 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
                 "USDT transfer failed"
             );
 
-            if (hasAgent) {
-                require(
-                    usdtToken.transfer(
-                        agentManager.getAgentAddress(msg.sender),
-                        commission
-                    ),
-                    "Commission transfer failed"
+            if (hasExecutorAgent) {
+                usdtToken.transfer(
+                    agentManager.getAgentAddress(msg.sender),
+                    executorCommission
                 );
-                platformUSDTFees += (usdtFee - commission);
-            } else {
-                platformUSDTFees += usdtFee;
             }
+            if (hasCreatorAgent) {
+                usdtToken.transfer(
+                    agentManager.getAgentAddress(trade.creator),
+                    creatorCommission
+                );
+            }
+
+            platformUSDTFees +=
+                usdtFee -
+                executorCommission -
+                creatorCommission;
         } else {
             require(
                 usdtToken.transfer(msg.sender, amountAfterFee),
                 "USDT transfer failed"
             );
 
-            if (hasAgent) {
-                require(
-                    usdtToken.transfer(
-                        agentManager.getAgentAddress(msg.sender),
-                        commission
-                    ),
-                    "Commission transfer failed"
+            if (hasExecutorAgent) {
+                usdtToken.transfer(
+                    agentManager.getAgentAddress(msg.sender),
+                    executorCommission
                 );
-                platformUSDTFees += (usdtFee - commission);
-            } else {
-                platformUSDTFees += usdtFee;
             }
+            if (hasCreatorAgent) {
+                usdtToken.transfer(
+                    agentManager.getAgentAddress(trade.creator),
+                    creatorCommission
+                );
+            }
+
+            platformUSDTFees +=
+                usdtFee -
+                executorCommission -
+                creatorCommission;
         }
 
         if (trade.isMarketPrice && cashback_rate > 0) {

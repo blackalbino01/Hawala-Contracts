@@ -11,6 +11,12 @@ contract AgentManager is Ownable, ReentrancyGuard {
 
     mapping(address => bool) public operators;
 
+    struct Transaction {
+        address wallet;
+        uint256 btcAmount;
+        bool orderType;
+    }
+
     struct Agent {
         bool isActive;
         uint256 commissionRate; // in basis points (e.g., 250 = 2.5%)
@@ -21,9 +27,7 @@ contract AgentManager is Ownable, ReentrancyGuard {
 
     mapping(address => Agent) public agents;
     mapping(address => address) public clientToAgent;
-
-    mapping(address => uint256) public agentBtcVolume;
-    mapping(address => uint256) public agentUsdtVolume;
+    mapping(address => Transaction[]) public agentToTransactions;
 
     event AgentSuspended(address indexed agent);
     event AgentApproved(address indexed agent);
@@ -129,13 +133,27 @@ contract AgentManager is Ownable, ReentrancyGuard {
     function recordTrade(
         address trader,
         uint256 btcAmount,
-        uint256 usdtAmount
+        uint256 usdtAmount,
+        bool isBTCToUSDT
     ) external onlyFactory {
         address agent = clientToAgent[trader];
         if (agent != address(0) && agents[agent].isActive) {
+            agentToTransactions[agent].push(
+                Transaction({
+                    wallet: trader,
+                    btcAmount: btcAmount,
+                    orderType: isBTCToUSDT
+                })
+            );
             agents[agent].totalBtcVolume += btcAmount;
             agents[agent].totalUsdtVolume += usdtAmount;
         }
+    }
+
+    function getAgentTransactions(
+        address agent
+    ) external view returns (Transaction[] memory) {
+        return agentToTransactions[agent];
     }
 
     function addCommission(
