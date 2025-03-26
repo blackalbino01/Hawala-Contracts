@@ -63,7 +63,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         address indexed seller,
         uint256 executedBtcAmount,
         uint256 executedUsdtAmount,
-        uint256 remainingBtcAmount
+        uint256 remainingBtcAmount,
+        uint256 TradeUSDTFees
     );
     event TradeCancelled(bytes32 indexed tradeId);
     event TradeAutoCancelled(bytes32 indexed tradeId);
@@ -305,7 +306,8 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
             trade.creator,
             amount,
             usdtAmount,
-            trade.btcAmount
+            trade.btcAmount,
+            usdtFee
         );
     }
 
