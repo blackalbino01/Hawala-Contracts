@@ -35,7 +35,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
 
     uint256 public constant MARKET_TRADE_TIMEOUT = 1 hours;
     uint256 public constant FIXED_TRADE_TIMEOUT = 24 hours;
-    uint256 public constant MIN_RESIDUAL = 10000000000000; // 0.00001 BTC
+    uint256 public constant MIN_RESIDUAL = 100000000000000; // 0.0001 BTC
 
     uint256 public marketFee = 25; // 0.25%
     uint256 public fixedFee = 200; // 2.00%
@@ -96,11 +96,7 @@ contract HawalaFactory is Ownable, ReentrancyGuard, Pausable {
         _;
     }
 
-    constructor(
-        address _usdtToken,
-        address initialOwner,
-        address _agentManager
-    ) Ownable(initialOwner) {
+    constructor(address _usdtToken, address _agentManager) Ownable(msg.sender) {
         usdtToken = IERC20(_usdtToken);
         agentManager = AgentManager(_agentManager);
     }

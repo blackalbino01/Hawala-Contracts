@@ -21,8 +21,11 @@ contract HawalaToken is ERC20, Ownable {
         public vestingSchedules;
     mapping(address => uint8[]) public userRounds;
 
-    constructor() Ownable(msg.sender) ERC20("HawalaDex Token", "HAW") {
-        _mint(msg.sender, 1_000_000_000 * 10 ** decimals());
+    constructor(
+        address _hawalaWallet
+    ) Ownable(msg.sender) ERC20("HawalaDEX Token", "HAW") {
+        require(_hawalaWallet != address(0), "Invalid Address");
+        _mint(_hawalaWallet, 1_000_000_000 * 10 ** decimals());
     }
 
     function setVestingContract(address _vestingContract) external onlyOwner {
